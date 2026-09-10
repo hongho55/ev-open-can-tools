@@ -26,6 +26,29 @@ CAN B, CH and VEH labels are accepted under existing EV semantics; labels contai
 Party, CAN A or unknown bits are rejected. This module is standalone and is not
 wired into firmware, drivers, handlers, or any transmit path.
 
+Telemetry filter
+----------------
+`include/chassis/telemetry.h` is the smallest receive-only slice of the Flipper
+blackbox filter that is useful on Chassis/Vehicle CAN. It counts accepted RX
+frames per known signal and exposes per-signal freshness; it does not store
+payloads, write files, format JSON, transmit, or forward frames. The selected IDs
+are `0x118`, `0x129`, `0x145`, `0x238`, `0x2B9`, `0x389`, `0x399`, `0x39B`,
+`0x3EE`, `0x3FD`, and `0x488`. `0x370` is intentionally excluded.
+
+The module accepts only the existing CH/VEH/CAN B labels. `CAN_BUS_ANY`, Party,
+CAN A, unknown bits, unlisted IDs, invalid/short DLC, and the wrong or unknown
+DAS layout are rejected. The DAS status IDs require DLC 8; other minimum DLCs
+match the bytes consumed by the corresponding Flipper receive-only parsers.
+Counters remain diagnostic after timeout, but `TelemetrySample::fresh` is false
+until a valid caller-supplied timeout confirms recent reception.
+
+Evidence inspected in the read-only `/Users/hong/flipper-tesla-fsd` checkout:
+`fsd_logic/fsd_blackbox_filter.h` key IDs (with `0x370` removed),
+`fsd_logic/fsd_handler.c:403-410,493-505,520-530,983-1000,1039-1064`, and
+the ESP32 parser equivalents. The Flipper summary formatter was not ported:
+its `can0`/`can1` and TX fields conflict with this repository's semantic bus
+routing and receive-only scope.
+
 Safety gates (standalone; no combined helper)
 -------------------------------------------
 `include/chassis/safety_gates.h` adds AP-first, Abort Guard and Soft Engage only.
@@ -39,6 +62,10 @@ c++ -std=c++17 -Wall -Wextra -Werror -Iinclude -I"$UNITY_SRC" \
   test/test_native_chassis/test_safety_gates.cpp "$build_dir/unity.o" \
   -o "$build_dir/safety_tests"
 "$build_dir/safety_tests"
+c++ -std=c++17 -Wall -Wextra -Werror -Iinclude -I"$UNITY_SRC" \
+  test/test_native_chassis/test_telemetry.cpp "$build_dir/unity.o" \
+  -o "$build_dir/telemetry_tests"
+"$build_dir/telemetry_tests"
 python3 -m unittest discover -s test -p 'test_*.py'
 git diff --check
 ```
