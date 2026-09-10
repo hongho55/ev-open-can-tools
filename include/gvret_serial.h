@@ -60,14 +60,14 @@ inline void sendDeviceInfo()
 
 inline void sendBusCount()
 {
-    const uint8_t response[3] = {kProtocolStart, kGetBusCount, 1};
+    const uint8_t response[3] = {kProtocolStart, kGetBusCount, 2};
     sendBytes(response, sizeof(response));
 }
 
 inline void sendCanParams()
 {
-    // GVRET keeps two five-byte bus slots in this fixed-size reply. Bus 1 is
-    // disabled; firmware exposes only bus 0 at 500 kbit/s.
+    // GVRET keeps two five-byte bus slots in this fixed-size reply. Both
+    // physical T-2CAN buses are exposed at 500 kbit/s.
     sendBytes(kCanParamsResponse, sizeof(kCanParamsResponse));
 }
 
