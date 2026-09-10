@@ -17,6 +17,25 @@ void test_encodes_reference_frame_layout()
     TEST_ASSERT_EQUAL_UINT8_ARRAY(expected, output, sizeof(expected));
 }
 
+void test_encodes_can_b_in_existing_bus_nibble()
+{
+    CanFrame frame = {.id = 0x370, .dlc = 3, .data = {0x12, 0x34, 0x56},
+                      .bus = CAN_BUS_CAN_B | CAN_BUS_VEH};
+    uint8_t output[19] = {};
+    size_t size = GvretProtocol::encodeCanFrame(frame, 0, output, sizeof(output));
+    TEST_ASSERT_EQUAL_size_t(14, size);
+    TEST_ASSERT_EQUAL_HEX8(0x13, output[10]);
+}
+
+void test_semantic_can_b_selector_sets_existing_bus_nibble()
+{
+    CanFrame frame = {.id = 0x370, .dlc = 0, .bus = CAN_BUS_VEH};
+    uint8_t output[19] = {};
+    size_t size = GvretProtocol::encodeCanFrame(frame, 0, output, sizeof(output));
+    TEST_ASSERT_EQUAL_size_t(11, size);
+    TEST_ASSERT_EQUAL_HEX8(0x10, output[10]);
+}
+
 void test_rejects_invalid_frame_or_short_output()
 {
     uint8_t output[19] = {};
@@ -28,22 +47,27 @@ void test_rejects_invalid_frame_or_short_output()
     TEST_ASSERT_EQUAL_size_t(0, GvretProtocol::encodeCanFrame(valid, 0, output, 18));
 }
 
-void test_can_params_reply_describes_one_500k_bus()
+void test_can_params_reply_describes_two_500k_buses()
 {
     TEST_ASSERT_EQUAL_size_t(19, sizeof(GvretProtocol::kCanParamsResponse));
     TEST_ASSERT_EQUAL_HEX8(0xF1, GvretProtocol::kCanParamsResponse[0]);
     TEST_ASSERT_EQUAL_HEX8(0x06, GvretProtocol::kCanParamsResponse[1]);
-    TEST_ASSERT_EQUAL_UINT8(1, GvretProtocol::kCanParamsResponse[2]);
+    TEST_ASSERT_EQUAL_UINT8(2, GvretProtocol::kCanParamsResponse[2]);
     TEST_ASSERT_EQUAL_HEX8(0x20, GvretProtocol::kCanParamsResponse[3]);
     TEST_ASSERT_EQUAL_HEX8(0xA1, GvretProtocol::kCanParamsResponse[4]);
     TEST_ASSERT_EQUAL_HEX8(0x07, GvretProtocol::kCanParamsResponse[5]);
+    TEST_ASSERT_EQUAL_HEX8(0x20, GvretProtocol::kCanParamsResponse[11]);
+    TEST_ASSERT_EQUAL_HEX8(0xA1, GvretProtocol::kCanParamsResponse[12]);
+    TEST_ASSERT_EQUAL_HEX8(0x07, GvretProtocol::kCanParamsResponse[13]);
 }
 
 int main()
 {
     UNITY_BEGIN();
     RUN_TEST(test_encodes_reference_frame_layout);
+    RUN_TEST(test_encodes_can_b_in_existing_bus_nibble);
+    RUN_TEST(test_semantic_can_b_selector_sets_existing_bus_nibble);
     RUN_TEST(test_rejects_invalid_frame_or_short_output);
-    RUN_TEST(test_can_params_reply_describes_one_500k_bus);
+    RUN_TEST(test_can_params_reply_describes_two_500k_buses);
     return UNITY_END();
 }

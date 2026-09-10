@@ -17,9 +17,18 @@ static constexpr uint8_t kKeepAlive = 0x09;
 static constexpr uint8_t kGetBusCount = 0x0C;
 
 static constexpr uint8_t kCanParamsResponse[19] = {
-    kProtocolStart, kGetParams, 1, 0x20, 0xA1, 0x07, 0,
-    0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0};
+    kProtocolStart, kGetParams, 2,
+    // Preserve the established fixed-size parameter slots and describe both
+    // physical buses as standard-frame 500 kbit/s CAN.
+    0x20, 0xA1, 0x07, 0, 0, 0, 0, 0,
+    0x20, 0xA1, 0x07, 0, 0, 0, 0, 0};
+
+inline uint8_t busIndex(const CanFrame &frame)
+{
+    // Semantic Vehicle/Chassis selectors are both physically carried by CAN B
+    // even when a caller has not added the explicit physical selector.
+    return (frame.bus & (CAN_BUS_CAN_B | CAN_BUS_CH | CAN_BUS_VEH)) ? 1 : 0;
+}
 
 inline size_t encodeCanFrame(const CanFrame &frame, uint32_t timestampUs,
                              uint8_t *output, size_t capacity)
@@ -35,7 +44,7 @@ inline size_t encodeCanFrame(const CanFrame &frame, uint32_t timestampUs,
         output[index++] = static_cast<uint8_t>(timestampUs >> (shift * 8));
     for (uint8_t shift = 0; shift < 4; shift++)
         output[index++] = static_cast<uint8_t>(frame.id >> (shift * 8));
-    output[index++] = static_cast<uint8_t>(frame.dlc & 0x0F); // bus 0
+    output[index++] = static_cast<uint8_t>((busIndex(frame) << 4) | (frame.dlc & 0x0F));
     memcpy(output + index, frame.data, frame.dlc);
     return outputSize;
 }
