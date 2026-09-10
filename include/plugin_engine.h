@@ -544,6 +544,12 @@ static bool pluginBusMaskForToken(const char *token, uint8_t len, uint8_t &mask)
         mask = CAN_BUS_VEH;
     else if (pluginBusTokenEquals(token, len, "PARTY"))
         mask = CAN_BUS_PARTY;
+    else if (pluginBusTokenEquals(token, len, "CAN_A") ||
+             pluginBusTokenEquals(token, len, "CANA"))
+        mask = CAN_BUS_CAN_A;
+    else if (pluginBusTokenEquals(token, len, "CAN_B") ||
+             pluginBusTokenEquals(token, len, "CANB"))
+        mask = CAN_BUS_CAN_B;
     else if (len != 0 && !pluginBusTokenEquals(token, len, "ANY"))
         return false;
     return true;
@@ -606,7 +612,8 @@ static bool pluginParseBus(JsonVariant value, uint8_t &mask)
     if (value.is<uint8_t>())
     {
         uint8_t raw = value.as<uint8_t>();
-        mask = raw & (CAN_BUS_CH | CAN_BUS_VEH | CAN_BUS_PARTY);
+        mask = raw & (CAN_BUS_CH | CAN_BUS_VEH | CAN_BUS_PARTY |
+                      CAN_BUS_CAN_A | CAN_BUS_CAN_B);
         return raw == mask;
     }
     if (value.is<const char *>())

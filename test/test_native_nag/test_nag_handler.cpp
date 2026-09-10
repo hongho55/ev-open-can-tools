@@ -149,6 +149,23 @@ void test_nag_does_not_echo_when_disabled()
     TEST_ASSERT_EQUAL(0, mock.sent.size());
 }
 
+void test_nag_does_not_consume_can_b_frame()
+{
+    CanFrame f = makeEpasFrame(0, 0.33, 0x0C);
+    f.bus = CAN_BUS_CAN_B | CAN_BUS_VEH;
+    handler.handleMessage(f, mock);
+    TEST_ASSERT_EQUAL(0, mock.sent.size());
+}
+
+void test_nag_echo_preserves_can_a_bus_label()
+{
+    CanFrame f = makeEpasFrame(0, 0.33, 0x0C);
+    f.bus = CAN_BUS_CAN_A | CAN_BUS_PARTY;
+    handler.handleMessage(f, mock);
+    TEST_ASSERT_EQUAL(1, mock.sent.size());
+    TEST_ASSERT_EQUAL_UINT8(CAN_BUS_CAN_A | CAN_BUS_PARTY, mock.sent[0].bus);
+}
+
 void test_nag_ignores_non_880_id()
 {
     CanFrame f = makeEpasFrame(0, 0.33, 0x0C);
@@ -504,6 +521,8 @@ int main()
     RUN_TEST(test_nag_does_not_echo_when_handson_2);
     RUN_TEST(test_nag_does_not_echo_when_handson_3);
     RUN_TEST(test_nag_does_not_echo_when_disabled);
+    RUN_TEST(test_nag_does_not_consume_can_b_frame);
+    RUN_TEST(test_nag_echo_preserves_can_a_bus_label);
     RUN_TEST(test_nag_ignores_non_880_id);
     RUN_TEST(test_nag_ignores_short_dlc);
 
