@@ -734,6 +734,13 @@ struct NagHandler : public CarManagerBase
     void handleMessageAt(CanFrame &frame, CanDriver &driver, uint32_t now,
                          bool transmissionAllowed = true)
     {
+        // Nag suppression is a Party/CAN A feature. In a dual-bus build, do
+        // not consume an identically numbered frame from CAN B and then emit
+        // it on CAN A through the fail-closed ANY route.
+        if (frame.bus != CAN_BUS_ANY &&
+            (frame.bus & (CAN_BUS_CAN_A | CAN_BUS_PARTY)) == 0)
+            return;
+
         uint8_t selectedMode = clampNagMode(nagMode);
         uint8_t selectedHardwareMode = static_cast<uint8_t>(nagHardwareMode);
         if (!nagModeAllowedForHardware(selectedMode, selectedHardwareMode))
@@ -787,6 +794,7 @@ struct NagHandler : public CarManagerBase
         CanFrame echo;
         echo.id = kTargetId;
         echo.dlc = 8;
+        echo.bus = frame.bus;
 
         echo.data[0] = frame.data[0];
         echo.data[1] = frame.data[1];
