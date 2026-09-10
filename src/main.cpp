@@ -20,6 +20,17 @@
 #include <SPI.h>
 #endif
 #include "drivers/esp32_mcp2515_driver.h"
+#elif defined(DRIVER_T2CAN_DUAL)
+#ifndef ESP_PLATFORM
+#include <SPI.h>
+#endif
+#include "drivers/dual_can_driver.h"
+#ifndef TWAI_TX_PIN
+#define TWAI_TX_PIN GPIO_NUM_7
+#endif
+#ifndef TWAI_RX_PIN
+#define TWAI_RX_PIN GPIO_NUM_6
+#endif
 #elif defined(DRIVER_SAME51)
 #include "drivers/same51_driver.h"
 #elif defined(DRIVER_TWAI)
@@ -34,7 +45,7 @@
 #define TWAI_RX_PIN GPIO_NUM_4
 #endif
 #else
-#error "Define DRIVER_MCP2515, DRIVER_ESP32_EXT_MCP2515, DRIVER_SAME51, or DRIVER_TWAI in build_flags"
+#error "Define a supported CAN driver in build_flags"
 #endif
 
 #if defined(ESP32_DASHBOARD) && !defined(NATIVE_BUILD)
@@ -110,6 +121,26 @@ static void app_main_setup()
     mcpDashboardSetup(appHandler.get(), appDriver.get(), mcpDriver);
 #endif
     appStartDriver<ESP32_MCP2515Driver>("ESP32 + MCP2515 ready @ 500k");
+#elif defined(DRIVER_T2CAN_DUAL)
+#ifndef ESP_PLATFORM
+    SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, PIN_CAN_CS);
+    SPI.setFrequency(8000000);
+#endif
+#ifdef PIN_CAN_RESET
+    pinMode(PIN_CAN_RESET, OUTPUT);
+    digitalWrite(PIN_CAN_RESET, HIGH);
+    delay(20);
+    digitalWrite(PIN_CAN_RESET, LOW);
+    delay(20);
+    digitalWrite(PIN_CAN_RESET, HIGH);
+    delay(20);
+#endif
+    auto drv = std::make_unique<DualCanDriver>(PIN_CAN_CS, TWAI_TX_PIN, TWAI_RX_PIN);
+    appPrepare<DualCanDriver>(std::move(drv));
+#ifdef ESP32_DASHBOARD
+    mcpDashboardSetup(appHandler.get(), appDriver.get());
+#endif
+    appStartDriver<DualCanDriver>("T-2CAN dual CAN A(MCP2515)+CAN B(TWAI) @ 500k");
 #elif defined(DRIVER_SAME51)
     appPrepare<SAME51Driver>(std::make_unique<SAME51Driver>());
     appStartDriver<SAME51Driver>("SAME51 CAN ready @ 500k");
@@ -164,6 +195,11 @@ static void app_main_loop()
 #endif
 #elif defined(DRIVER_ESP32_EXT_MCP2515)
     appLoop<ESP32_MCP2515Driver>();
+#ifdef ESP32_DASHBOARD
+    mcpDashboardLoop();
+#endif
+#elif defined(DRIVER_T2CAN_DUAL)
+    appLoop<DualCanDriver>();
 #ifdef ESP32_DASHBOARD
     mcpDashboardLoop();
 #endif

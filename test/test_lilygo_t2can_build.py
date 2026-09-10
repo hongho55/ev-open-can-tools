@@ -20,11 +20,11 @@ class LilygoT2CanBuildTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-    def test_board_environment_uses_party_can_mcp2515(self) -> None:
+    def test_board_environment_uses_both_physical_can_buses(self) -> None:
         environment = self.platformio.split("[env:lilygo_t2can]", 1)[1].split(
             "[env:", 1
         )[0]
-        self.assertIn("-DDRIVER_ESP32_EXT_MCP2515", environment)
+        self.assertIn("-DDRIVER_T2CAN_DUAL", environment)
         self.assertIn("-DPIN_CAN_CS=10", environment)
         self.assertIn("-DPIN_CAN_INTERRUPT=8", environment)
         self.assertIn("-DPIN_CAN_RESET=9", environment)
@@ -32,6 +32,8 @@ class LilygoT2CanBuildTests(unittest.TestCase):
         self.assertIn("-DSPI_MISO=13", environment)
         self.assertIn("-DSPI_MOSI=11", environment)
         self.assertIn("-DMCP_CRYSTAL_FREQ=MCP_16MHZ", environment)
+        self.assertIn("-DTWAI_TX_PIN=GPIO_NUM_7", environment)
+        self.assertIn("-DTWAI_RX_PIN=GPIO_NUM_6", environment)
         self.assertIn("partitions_16mb_ota_4096k_nvs64.csv", environment)
 
     def test_board_hardware_resets_mcp2515(self) -> None:
@@ -42,11 +44,11 @@ class LilygoT2CanBuildTests(unittest.TestCase):
         self.assertIn("- env: lilygo_t2can", self.tests_workflow)
         self.assertIn("- env: lilygo_t2can", self.release_workflow)
         self.assertIn(
-            "- env: lilygo_t2can\n            profile: --driver DRIVER_ESP32_EXT_MCP2515",
+            "- env: lilygo_t2can\n            profile: --driver DRIVER_T2CAN_DUAL",
             self.tests_workflow,
         )
         self.assertIn(
-            "- env: lilygo_t2can\n            profile: --driver DRIVER_ESP32_EXT_MCP2515",
+            "- env: lilygo_t2can\n            profile: --driver DRIVER_T2CAN_DUAL",
             self.release_workflow,
         )
 
