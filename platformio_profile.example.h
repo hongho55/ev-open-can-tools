@@ -11,6 +11,7 @@
 // #define DRIVER_SAME51            // Adafruit Feather M4 CAN Express (native ATSAME51 CAN)
 // #define DRIVER_TWAI // ESP32 boards with built-in TWAI (CAN) peripheral
 // #define DRIVER_ESP32_EXT_MCP2515 // ESP32-S3 + external MCP2515 via SPI (use esp32_ext_mcp2515 env)
+// #define DRIVER_T2CAN_DUAL       // LILYGO T-2CAN: MCP2515 CAN A + native TWAI CAN B
 
 // ── VEHICLE HARDWARE SELECTION ───────────────────────────────────
 // Uncomment ONE of the following lines to match your vehicle:
