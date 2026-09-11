@@ -101,9 +101,10 @@ class EspIdfStabilityRegressionTests(unittest.TestCase):
         self.assertNotIn("twai_transmit", self.gvret)
         self.assertNotIn("sendMessage", self.gvret)
 
-    def test_support_is_bottom_on_demand_and_single_endpoint(self) -> None:
+    def test_support_is_in_diagnostics_on_demand_and_single_endpoint(self) -> None:
         support_position = self.ui.index('id="support-card"')
-        self.assertGreater(support_position, self.ui.index("Firmware update"))
+        self.assertGreater(support_position, self.ui.index('id="panel-diagnostics"'))
+        self.assertLess(support_position, self.ui.index('id="panel-updates"'))
         self.assertLess(support_position, self.ui.index('class="footer"'))
         self.assertIn('<details class="card" id="support-card"', self.ui)
         self.assertIn("requestText('/support')", self.ui)
