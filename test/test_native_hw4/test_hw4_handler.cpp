@@ -380,8 +380,8 @@ void test_hw4_das_status_available_does_not_mark_ap_active()
 {
     CanFrame f = {.id = 923};
     f.dlc = 8;
-    f.data[0] = 0x02; // AVAILABLE
-    f.data[1] = 0x60; // Unrelated byte-1 data must not mark AP active.
+    f.data[0] = 0x06; // old byte-0 convention; must be ignored
+    f.data[1] = 0x20; // standard HW4 AVAILABLE
 
     handler.handleMessage(f, mock);
 
@@ -392,7 +392,8 @@ void test_hw4_das_status_active_marks_ap_active()
 {
     CanFrame f = {.id = 923};
     f.dlc = 8;
-    f.data[0] = 0x06; // ACTIVE_FSD
+    f.data[0] = 0x02; // unrelated byte-0 data
+    f.data[1] = 0x60; // standard HW4 ACTIVE_FSD
 
     handler.handleMessage(f, mock);
 
@@ -410,12 +411,12 @@ void test_hw4_ignores_0x399_as_ap_state()
     TEST_ASSERT_FALSE(handler.APActive);
 }
 
-void test_hw4_das_status_ignores_unrelated_byte1_high_nibble()
+void test_hw4_das_status_uses_byte1_high_nibble()
 {
     CanFrame f = {.id = 923};
     f.dlc = 8;
     f.data[0] = 0x06;
-    f.data[1] = 0x20;
+    f.data[1] = 0x60;
 
     handler.handleMessage(f, mock);
 
@@ -423,11 +424,12 @@ void test_hw4_das_status_ignores_unrelated_byte1_high_nibble()
     TEST_ASSERT_EQUAL_INT(6, handler.dasAutopilotStatus);
 }
 
-void test_hw4_das_status_accepts_one_byte_frame()
+void test_hw4_das_status_accepts_two_byte_frame()
 {
     CanFrame f = {.id = 923};
-    f.dlc = 1;
-    f.data[0] = 0x03;
+    f.dlc = 2;
+    f.data[0] = 0x00;
+    f.data[1] = 0x30;
 
     handler.handleMessage(f, mock);
 
@@ -538,8 +540,8 @@ int main()
     RUN_TEST(test_hw4_das_status_available_does_not_mark_ap_active);
     RUN_TEST(test_hw4_das_status_active_marks_ap_active);
     RUN_TEST(test_hw4_ignores_0x399_as_ap_state);
-    RUN_TEST(test_hw4_das_status_ignores_unrelated_byte1_high_nibble);
-    RUN_TEST(test_hw4_das_status_accepts_one_byte_frame);
+    RUN_TEST(test_hw4_das_status_uses_byte1_high_nibble);
+    RUN_TEST(test_hw4_das_status_accepts_two_byte_frame);
     RUN_TEST(test_hw4_gw_autopilot_mux2_updates_state_without_send);
     RUN_TEST(test_hw4_gear_park_marks_parked);
     RUN_TEST(test_hw4_gear_drive_clears_parked);

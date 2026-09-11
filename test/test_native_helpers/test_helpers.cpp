@@ -166,12 +166,23 @@ void test_isDASAutopilotActive_false_for_abort_states()
     TEST_ASSERT_FALSE(isDASAutopilotActive(15));
 }
 
-void test_readHW4DASAutopilotStatus_extracts_byte0_low_nibble()
+void test_readHW4DASAutopilotStatus_extracts_byte1_high_nibble()
 {
     CanFrame f = {};
-    f.data[0] = 0xA6;
-    f.data[1] = 0x20;
+    f.data[0] = 0xA2; // unrelated standard-HW4 byte 0
+    f.data[1] = 0x60;
     TEST_ASSERT_EQUAL_UINT8(6, readHW4DASAutopilotStatus(f));
+}
+
+void test_isESPDriverBrakeApplied_uses_enum_threshold()
+{
+    CanFrame f = {};
+    f.data[3] = 0x20; // raw value 1: Not_Applied
+    TEST_ASSERT_FALSE(isESPDriverBrakeApplied(f));
+    f.data[3] = 0x40; // raw value 2: Driver_applying_brakes
+    TEST_ASSERT_TRUE(isESPDriverBrakeApplied(f));
+    f.data[3] = 0x60; // raw value 3: Faulty_SNA, still enum >= 2
+    TEST_ASSERT_TRUE(isESPDriverBrakeApplied(f));
 }
 
 void test_readDASAutopilotHandsOnState_extracts_byte5_middle_nibble()
@@ -381,7 +392,8 @@ int main()
     RUN_TEST(test_isDASAutopilotActive_true_for_active_states);
     RUN_TEST(test_isDASAutopilotActive_false_for_available_state);
     RUN_TEST(test_isDASAutopilotActive_false_for_abort_states);
-    RUN_TEST(test_readHW4DASAutopilotStatus_extracts_byte0_low_nibble);
+    RUN_TEST(test_readHW4DASAutopilotStatus_extracts_byte1_high_nibble);
+    RUN_TEST(test_isESPDriverBrakeApplied_uses_enum_threshold);
     RUN_TEST(test_readDASAutopilotHandsOnState_extracts_byte5_middle_nibble);
     RUN_TEST(test_readSCCMSteeringAngle_decodes_current_dbc_layout);
     RUN_TEST(test_readSCCMSteeringAngle_decodes_negative_angle);

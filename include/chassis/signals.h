@@ -12,6 +12,18 @@ constexpr uint8_t kLegacyApByte = 0;
 constexpr uint8_t kHw4ApByte = 1;
 constexpr uint8_t kHw4ApShift = 4;
 
+// Flipper fsd_logic/fsd_handler.c receive-only signal fields.
+constexpr uint8_t kEspDriverBrakeByte = 3;
+constexpr uint8_t kEspDriverBrakeShift = 5;
+constexpr uint8_t kEspDriverBrakeMask = 0x03;
+constexpr uint8_t kEspDriverBrakeAppliedMin = 2;
+constexpr uint8_t kDasControlAccStateByte = 1;
+constexpr uint8_t kDasControlAccStateShift = 4;
+constexpr uint8_t kDasControlAccStateMask = 0x0F;
+constexpr uint8_t kDasStatus2AccReportByte = 3;
+constexpr uint8_t kDasStatus2AccReportShift = 2;
+constexpr uint8_t kDasStatus2AccReportMask = 0x1F;
+
 // Caller must explicitly confirm the layout; hardware/IDs alone are insufficient.
 // Highland byte0 variants and automatic layout inference are deliberately omitted.
 enum class DasLayout : uint8_t { Unknown, LegacyHw3, StandardHw4 };

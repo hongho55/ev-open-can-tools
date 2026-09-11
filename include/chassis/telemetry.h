@@ -160,11 +160,11 @@ private:
             signal = TelemetrySignal::UiMapData;
             return true;
         case kDasControlId:
-            if (!validDlc(frame, 2)) return false;
+            if (!validDlc(frame, 3)) return false;
             signal = TelemetrySignal::DasControl;
             return true;
         case kDasStatus2Id:
-            if (!validDlc(frame, 2)) return false;
+            if (!validDlc(frame, 5)) return false;
             signal = TelemetrySignal::DasStatus2;
             return true;
         case kApLegacyId:

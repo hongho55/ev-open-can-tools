@@ -2,6 +2,7 @@
 
 #include <unity.h>
 #include "chassis/telemetry.h"
+#include "chassis/telemetry_state.h"
 #include "drivers/dual_can_routing.h"
 
 using namespace Chassis;
@@ -86,12 +87,60 @@ void test_unknown_or_short_dlc_is_rejected()
     TEST_ASSERT_FALSE(telemetry.observe(frame(kSteeringAngleId, 3), 1));
     TEST_ASSERT_FALSE(telemetry.observe(frame(kEspStatusId, 3), 1));
     TEST_ASSERT_FALSE(telemetry.observe(frame(kUiMapDataId, 1), 1));
+    TEST_ASSERT_FALSE(telemetry.observe(frame(kDasControlId, 2), 1));
+    TEST_ASSERT_FALSE(telemetry.observe(frame(kDasStatus2Id, 4), 1));
     TEST_ASSERT_FALSE(telemetry.observe(frame(kDasSteeringId, 2), 1));
     TEST_ASSERT_FALSE(telemetry.observe(frame(kApControlId, 7), 1));
 
     TEST_ASSERT_TRUE(telemetry.observe(frame(kSteeringAngleId, 4), 2));
     TEST_ASSERT_TRUE(telemetry.observe(frame(kDasSteeringId, 3), 2));
     TEST_ASSERT_EQUAL_UINT32(2, telemetry.acceptedFrames());
+}
+
+void test_decoder_fields_match_flipper_layouts()
+{
+    Chassis::TelemetryState telemetry(DasLayout::StandardHw4, 100);
+
+    auto brake = frame(kEspStatusId, 4);
+    brake.data[3] = 0x20; // ESP_driverBrakeApply raw 1: Not_Applied
+    TEST_ASSERT_TRUE(telemetry.observe(brake, 1));
+    auto snapshot = telemetry.snapshot(1);
+    TEST_ASSERT_TRUE(snapshot.brakeSeen);
+    TEST_ASSERT_FALSE(snapshot.brakeApplied);
+
+    brake.data[3] = 0x40; // raw 2: Driver_applying_brakes
+    TEST_ASSERT_TRUE(telemetry.observe(brake, 2));
+    snapshot = telemetry.snapshot(2);
+    TEST_ASSERT_TRUE(snapshot.brakeApplied);
+
+    auto dasControl = frame(kDasControlId, 3);
+    dasControl.data[0] = 0xA5; // set speed low bits and unrelated byte-0 nibble
+    dasControl.data[1] = 0x40; // DAS_accState = 4
+    TEST_ASSERT_TRUE(telemetry.observe(dasControl, 3));
+    snapshot = telemetry.snapshot(3);
+    TEST_ASSERT_TRUE(snapshot.dasControlSeen);
+    TEST_ASSERT_EQUAL_UINT8(4, snapshot.accState);
+    TEST_ASSERT_FALSE(snapshot.dasStatus2Seen);
+
+    auto dasStatus2 = frame(kDasStatus2Id, 5);
+    dasStatus2.data[0] = 0x1F; // unrelated low byte
+    dasStatus2.data[3] = 0x14; // DAS_ACC_report = 5
+    TEST_ASSERT_TRUE(telemetry.observe(dasStatus2, 4));
+    snapshot = telemetry.snapshot(4);
+    TEST_ASSERT_TRUE(snapshot.dasStatus2Seen);
+    TEST_ASSERT_EQUAL_UINT8(5, snapshot.accReport);
+}
+
+void test_hw4_ap_state_uses_byte1_high_nibble()
+{
+    Chassis::TelemetryState telemetry(DasLayout::StandardHw4, 100);
+    auto das = frame(kDasHw4Id, 8);
+    das.data[0] = 0x06; // old byte-0 convention; must be ignored
+    das.data[1] = 0x30; // standard HW4 ACTIVE_NOMINAL
+    TEST_ASSERT_TRUE(telemetry.observe(das, 1));
+    auto snapshot = telemetry.snapshot(1);
+    TEST_ASSERT_TRUE(snapshot.dasSeen);
+    TEST_ASSERT_EQUAL_UINT8(3, snapshot.apState);
 }
 
 void test_samples_expire_wrap_safely_and_reset()
@@ -129,6 +178,8 @@ int main()
     RUN_TEST(test_only_chassis_bus_labels_are_accepted);
     RUN_TEST(test_das_layout_is_explicit_and_370_never_counts);
     RUN_TEST(test_unknown_or_short_dlc_is_rejected);
+    RUN_TEST(test_decoder_fields_match_flipper_layouts);
+    RUN_TEST(test_hw4_ap_state_uses_byte1_high_nibble);
     RUN_TEST(test_samples_expire_wrap_safely_and_reset);
     RUN_TEST(test_invalid_timeout_never_reports_live);
     return UNITY_END();

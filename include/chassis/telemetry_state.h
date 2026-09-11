@@ -42,8 +42,14 @@ struct TelemetrySnapshot
     uint16_t visionLimitKph = 0;
 
     bool dasStatus2Seen = false;
+    // Last decoded ACC value for the existing aggregate dashboard field. Use
+    // dasControlSeen/accState to distinguish DAS_control from DAS_status2.
     uint8_t accReport = 0;
     uint32_t dasStatus2Ms = 0;
+
+    bool dasControlSeen = false;
+    uint8_t accState = 0;
+    uint32_t dasControlMs = 0;
 
     bool apLegacySeen = false;
     bool apControlSeen = false;
@@ -106,6 +112,8 @@ public:
         out.dasSeen = fresh(snapshot_.dasSeen, snapshot_.dasMs, nowMs);
         out.dasStatus2Seen = fresh(snapshot_.dasStatus2Seen,
                                    snapshot_.dasStatus2Ms, nowMs);
+        out.dasControlSeen = fresh(snapshot_.dasControlSeen,
+                                   snapshot_.dasControlMs, nowMs);
         out.apLegacySeen = fresh(snapshot_.apLegacySeen, snapshot_.apLegacyMs, nowMs);
         out.apControlSeen = fresh(snapshot_.apControlSeen, snapshot_.apControlMs, nowMs);
         out.dasSteeringSeen = fresh(snapshot_.dasSteeringSeen, snapshot_.dasSteeringMs, nowMs);
@@ -180,7 +188,7 @@ private:
         case 0x145: // ESP_status: driver brake apply, bit 29
             if (!hasDlc(frame, 4)) return false;
             snapshot_.brakeSeen = true;
-            snapshot_.brakeApplied = (frame.data[3] & 0x60) != 0;
+            snapshot_.brakeApplied = isESPDriverBrakeApplied(frame);
             snapshot_.brakeMs = nowMs;
             break;
         case 0x238: // UI_driverAssistMapData: presence only
@@ -199,16 +207,17 @@ private:
                 snapshot_.speedMs = nowMs;
             }
             break;
-        case 0x2B9: // DAS_control: documented ACC-state byte presence
-            if (!hasDlc(frame, 2)) return false;
-            snapshot_.dasStatus2Seen = true;
-            snapshot_.accReport = frame.data[0] & 0x0F;
-            snapshot_.dasStatus2Ms = nowMs;
+        case 0x2B9: // DAS_control: DAS_accState, bit 12|4
+            if (!hasDlc(frame, 3)) return false;
+            snapshot_.dasControlSeen = true;
+            snapshot_.accState = readDASControlAccState(frame);
+            snapshot_.accReport = snapshot_.accState;
+            snapshot_.dasControlMs = nowMs;
             break;
-        case 0x389: // DAS_status2: documented ACC report presence
-            if (!hasDlc(frame, 2)) return false;
+        case 0x389: // DAS_status2: DAS_ACC_report, bit 26|5
+            if (!hasDlc(frame, 5)) return false;
             snapshot_.dasStatus2Seen = true;
-            snapshot_.accReport = frame.data[0] & 0x1F;
+            snapshot_.accReport = readDASStatus2AccReport(frame);
             snapshot_.dasStatus2Ms = nowMs;
             break;
         case 0x399: // Legacy/HW3 DAS layout only

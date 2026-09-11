@@ -2,6 +2,7 @@
 
 #include "can_frame_types.h"
 #include "shared_types.h"
+#include "chassis/signals.h"
 
 #if defined(BYPASS_TLSSC_REQUIREMENT) && !defined(ESP32_DASHBOARD)
 inline constexpr bool kBypassTlsscRequirementDefaultEnabled = true;
@@ -100,7 +101,34 @@ inline bool isDASAutopilotActive(uint8_t status)
 
 inline uint8_t readHW4DASAutopilotStatus(const CanFrame &frame)
 {
-    return frame.data[0] & 0x0F;
+    return static_cast<uint8_t>((frame.data[Chassis::kHw4ApByte] >>
+                                 Chassis::kHw4ApShift) & Chassis::kApStateMask);
+}
+
+inline uint8_t readESPDriverBrakeStatus(const CanFrame &frame)
+{
+    return static_cast<uint8_t>((frame.data[Chassis::kEspDriverBrakeByte] >>
+                                 Chassis::kEspDriverBrakeShift) &
+                                Chassis::kEspDriverBrakeMask);
+}
+
+inline bool isESPDriverBrakeApplied(const CanFrame &frame)
+{
+    return readESPDriverBrakeStatus(frame) >= Chassis::kEspDriverBrakeAppliedMin;
+}
+
+inline uint8_t readDASControlAccState(const CanFrame &frame)
+{
+    return static_cast<uint8_t>((frame.data[Chassis::kDasControlAccStateByte] >>
+                                 Chassis::kDasControlAccStateShift) &
+                                Chassis::kDasControlAccStateMask);
+}
+
+inline uint8_t readDASStatus2AccReport(const CanFrame &frame)
+{
+    return static_cast<uint8_t>((frame.data[Chassis::kDasStatus2AccReportByte] >>
+                                 Chassis::kDasStatus2AccReportShift) &
+                                Chassis::kDasStatus2AccReportMask);
 }
 
 inline uint8_t readDASAutopilotHandsOnState(const CanFrame &frame)

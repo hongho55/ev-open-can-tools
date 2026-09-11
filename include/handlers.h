@@ -943,7 +943,9 @@ private:
     {
         if (frame.dlc < 6)
             return;
-        uint8_t apState = readDASAutopilotStatus(frame);
+        uint8_t apState = activeHardwareMode_ == 2
+            ? readHW4DASAutopilotStatus(frame)
+            : readDASAutopilotStatus(frame);
         uint8_t handsOnState = readDASAutopilotHandsOnState(frame);
         apState_ = apState;
         lastApStateMs_ = now;
@@ -1101,7 +1103,7 @@ struct HW4Handler : public CarManagerBase
         }
         if (frame.id == 923)
         {
-            if (frame.dlc < 1)
+            if (frame.dlc < 2)
                 return;
             uint8_t status = readHW4DASAutopilotStatus(frame);
             dasAutopilotStatus = status;
