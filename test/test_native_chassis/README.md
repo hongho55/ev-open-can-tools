@@ -59,11 +59,11 @@ UNITY_SRC="$PWD/.pio/libdeps/native/Unity/src"
 build_dir=$(mktemp -d)
 cc -std=c99 -I"$UNITY_SRC" -c "$UNITY_SRC/unity.c" -o "$build_dir/unity.o"
 c++ -std=c++17 -Wall -Wextra -Werror -Iinclude -I"$UNITY_SRC" \
-  test/test_native_chassis/test_safety_gates.cpp "$build_dir/unity.o" \
+  test/test_native_safety_gates/test_safety_gates.cpp "$build_dir/unity.o" \
   -o "$build_dir/safety_tests"
 "$build_dir/safety_tests"
 c++ -std=c++17 -Wall -Wextra -Werror -Iinclude -I"$UNITY_SRC" \
-  test/test_native_chassis/test_telemetry.cpp "$build_dir/unity.o" \
+  test/test_native_telemetry/test_telemetry.cpp "$build_dir/unity.o" \
   -o "$build_dir/telemetry_tests"
 "$build_dir/telemetry_tests"
 python3 -m unittest discover -s test -p 'test_*.py'

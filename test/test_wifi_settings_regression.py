@@ -172,7 +172,7 @@ class WifiSettingsRegressionTests(unittest.TestCase):
 
     def test_summon_only_setting_defaults_disabled_and_roundtrips_reboot(self) -> None:
         self.assertHasUiId("summon-only-tgl")
-        for ui_field in ("Summon-only injection (beta)", "c.summonOnly", "smo:"):
+        for ui_field in ("Summon 전용 인젝션 (베타)", "c.summonOnly", "smo:"):
             with self.subTest(ui_field=ui_field):
                 self.assertIn(ui_field, self.ui)
 

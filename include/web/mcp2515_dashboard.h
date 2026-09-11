@@ -15,6 +15,7 @@
 #include <cerrno>
 #include <exception>
 #include <new>
+#include <memory>
 #include <soc/soc_caps.h>
 #ifdef ESP_PLATFORM
 #include <esp_mac.h>
@@ -28,6 +29,8 @@
 #include "bounded_text_writer.h"
 #include "can_helpers.h"
 #include "plugin_engine.h"
+#include "chassis/telemetry_state.h"
+#include "chassis/event_recorder.h"
 #if defined(DRIVER_ESP32_EXT_MCP2515)
 #include "drivers/esp32_mcp2515_driver.h"
 #endif
@@ -239,6 +242,10 @@ private:
 
 static DashHandlerRef dashHandler;
 static CanDriver *dashDriver = nullptr;
+// Read-only telemetry collected from explicitly classified CAN frames. This
+// state never feeds a transmit path; it is only exposed through /status.
+static Chassis::TelemetryState dashTelemetry{Chassis::DasLayout::Unknown, 1500};
+static Chassis::EventRecorder dashRecorder;
 #if defined(DRIVER_ESP32_EXT_MCP2515)
 static ESP32_MCP2515Driver *dashMcpDriver = nullptr;
 #endif
@@ -426,6 +433,10 @@ static void mcpDashOnFrame(const CanFrame &f)
 {
     DashDataGuard guard;
     unsigned long now = millis();
+    const bool telemetryAccepted = dashTelemetry.observe(f, now);
+    dashRecorder.observe(f, now);
+    if (telemetryAccepted && (f.id == 0x399 || f.id == 0x39B))
+        dashRecorder.noteAp(dashTelemetry.snapshot(now).apState, now);
     lastFrameMs = now;
     canOnline = true;
     if (dashWriteProbe.active && dashWriteProbe.state != kDashWriteProbeFailed && dashWriteProbeMatches(f))
@@ -1402,17 +1413,127 @@ static void handleRoot()
 #endif
 }
 
+// RAM-only event capture: all allocations and HTTP writes happen outside the CAN lock.
+static void handleDiagnosticDetails()
+{
+    Chassis::TelemetrySnapshot t;
+    bool enabled, frozen; size_t count; uint32_t triggerMs; const char *reason;
+    const uint32_t now = millis();
+    {
+        DashDataGuard guard;
+        t = dashTelemetry.snapshot(now);
+        dashRecorder.tick(now);
+        enabled = dashRecorder.enabled(); frozen = dashRecorder.frozen();
+        count = dashRecorder.count(); triggerMs = dashRecorder.triggerMs();
+        reason = dashRecorder.reason();
+    }
+    char response[1200];
+    BoundedTextWriter json(response, sizeof(response));
+    json.appendf("{\"bms\":{\"hvSeen\":%s,\"voltage\":%.2f,\"current\":%.1f,"
+        "\"socSeen\":%s,\"soc\":%.1f,\"thermalSeen\":%s,\"minC\":%d,\"maxC\":%d},"
+        "\"das\":{\"seen\":%s,\"laneChange\":%u,\"sideWarning\":%u,\"forwardWarning\":%u,"
+        "\"limitSeen\":%s,\"limitKph\":%u},"
+        "\"event\":{\"enabled\":%s,\"frozen\":%s,\"count\":%u,\"reason\":\"%s\",\"triggerMs\":%lu}}",
+        t.bmsHvSeen ? "true" : "false", t.packVoltageV, t.packCurrentA,
+        t.bmsSocSeen ? "true" : "false", t.socPercent,
+        t.bmsThermalSeen ? "true" : "false", int(t.tempMinC), int(t.tempMaxC),
+        t.dasSeen ? "true" : "false", unsigned(t.laneChange), unsigned(t.sideWarning), unsigned(t.forwardWarning),
+        t.visionLimitSeen ? "true" : "false", unsigned(t.visionLimitKph),
+        enabled ? "true" : "false", frozen ? "true" : "false", unsigned(count), reason,
+        static_cast<unsigned long>(triggerMs));
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "application/json", response);
+}
+
+static void handleEventControl()
+{
+    const String action = server.arg("action");
+    bool ok = true;
+    {
+        DashDataGuard guard;
+        if (action == "enable") dashRecorder.enable(true);
+        else if (action == "disable") dashRecorder.enable(false);
+        else if (action == "clear") dashRecorder.clear();
+        else if (action == "mark") ok = dashRecorder.mark(Chassis::EventRecorder::Trigger::Manual, millis());
+        else ok = false;
+    }
+    server.send(ok ? 200 : 400, "application/json", ok ? "{\"ok\":true}" : "{\"error\":\"Invalid action or recorder not armed\"}");
+}
+
+static void handleEventDownload()
+{
+    // Copy once so another client clearing/rearming cannot mix two incidents.
+    auto capture = std::unique_ptr<Chassis::EventRecorder>(new (std::nothrow) Chassis::EventRecorder);
+    if (!capture) { server.send(503, "text/plain", "Not enough memory"); return; }
+    { DashDataGuard guard; *capture = dashRecorder; }
+    if (!capture->frozen()) { server.send(409, "text/plain", "Capture is not ready"); return; }
+    String body;
+    body.reserve(capture->count() * 64 + 1);
+    for (size_t i = 0; i < capture->count(); ++i) {
+        Chassis::EventRecorder::Entry e;
+        if (!capture->entry(i, e)) break;
+        char line[96];
+        const char *bus = (e.frame.bus & (CAN_BUS_CAN_A | CAN_BUS_PARTY)) ? "can0" : "can1";
+        int n = snprintf(line, sizeof(line), "(%lu.%03lu) %s %03lX#",
+            static_cast<unsigned long>(e.ms / 1000), static_cast<unsigned long>(e.ms % 1000),
+            bus, static_cast<unsigned long>(e.frame.id));
+        for (uint8_t j = 0; j < e.frame.dlc; ++j)
+            n += snprintf(line + n, sizeof(line) - n, "%02X", e.frame.data[j]);
+        body += line; body += "\n";
+    }
+    server.sendHeader("Cache-Control", "no-store");
+    server.sendHeader("Content-Disposition", "attachment; filename=can-event.log");
+    server.send(200, "text/plain", body);
+}
+
+static void dashEventTick()
+{
+    // Error-counter edge, not a guessed bus-off enum. Detects dual-bus errors
+    // as well as single TWAI bus errors even when the browser is closed.
+    static uint32_t previousErrors = 0;
+    static uint8_t previousReadyMask = 0;
+    char diagnostics[2048] = {};
+    uint32_t errors = 0;
+    uint8_t readyMask = 0;
+    bool valid = false;
+    if (dashDriver) {
+        dashDriver->diagnosticsJson(diagnostics, sizeof(diagnostics));
+        JsonDocument doc;
+        if (!deserializeJson(doc, diagnostics)) {
+            valid = true;
+            if (!doc["canA"].isNull()) {
+                readyMask = (doc["canA"]["ready"].as<bool>() ? 1 : 0) |
+                            (doc["canB"]["ready"].as<bool>() ? 2 : 0);
+            } else {
+                readyMask = (doc["stateCode"] | -1) == 1 ? 1 : 0;
+            }
+            errors = (doc["canA"]["errors"] | 0u) + (doc["canB"]["errors"] | 0u) +
+                     (doc["busErrors"] | 0u) + (doc["rxErrors"] | 0u) + (doc["txErrors"] | 0u);
+        }
+    }
+    DashDataGuard guard;
+    if (valid) {
+        if (errors > previousErrors || (previousReadyMask & ~readyMask) != 0)
+            dashRecorder.mark(Chassis::EventRecorder::Trigger::CanError, millis());
+        previousErrors = errors;
+        previousReadyMask = readyMask;
+    }
+    dashRecorder.tick(millis());
+}
+
 static void handleStatus()
 {
     const unsigned long now = millis();
     bool canOnlineSnapshot = false;
     DashWriteProbe writeProbeSnapshot = {};
+    Chassis::TelemetrySnapshot telemetrySnapshot = {};
     {
         DashDataGuard guard;
         if (canOnline && now - lastFrameMs > 10000)
             canOnline = false;
         canOnlineSnapshot = canOnline;
         writeProbeSnapshot = dashWriteProbe;
+        telemetrySnapshot = dashTelemetry.snapshot(now);
     }
 
     char driverJson[768] = "{\"type\":\"unavailable\",\"stateCode\":0}";
@@ -1421,7 +1542,7 @@ static void handleStatus()
 
     const bool injectionActive = dashInjectionActive();
     const DashApGateSnapshot apGate = dashApGateSnapshot();
-    char response[2304];
+    char response[3584];
     BoundedTextWriter json(response, sizeof(response));
     json.appendf("{\"can\":%s,\"ia\":%s,\"ready\":%s",
                  canOnlineSnapshot ? "true" : "false",
@@ -1447,7 +1568,55 @@ static void handleStatus()
         static_cast<unsigned long>(RuntimeDiagnostics::injectionDelayRemainingMs(now)),
         static_cast<unsigned long>(CAN_LIVE_FRAME_THRESHOLD));
 #endif
-    json.appendf(",\"driver\":%s,\"probe\":{\"active\":%s,\"state\":%u,\"id\":%lu,"
+    json.appendf(
+        ",\"telemetry\":{\"accepted\":%lu,\"lastMs\":%lu,"
+        "\"speed\":{\"seen\":%s,\"kph\":%.2f,\"display\":%u,\"ageMs\":%lu},"
+        "\"gear\":{\"seen\":%s,\"value\":%u,\"autonomy\":%s,\"ageMs\":%lu},"
+        "\"steering\":{\"seen\":%s,\"deg\":%.2f,\"ageMs\":%lu},"
+        "\"brake\":{\"seen\":%s,\"applied\":%s,\"ageMs\":%lu},"
+        "\"das\":{\"seen\":%s,\"ap\":%u,\"handsOn\":%u,\"ageMs\":%lu},"
+        "\"acc\":{\"seen\":%s,\"report\":%u,\"ageMs\":%lu},"
+        "\"presence\":{\"apLegacy\":%s,\"apControl\":%s,\"dasSteering\":%s,\"map\":%s},"
+        "\"party\":{\"bmsHv\":%s,\"bmsSoc\":%s,\"bmsThermal\":%s,\"energy\":%s,\"torque\":%s,\"diState\":%s,\"warning\":%s},"
+        "\"tier\":{\"seen\":%s,\"value\":%u,\"ageMs\":%lu}}",
+        static_cast<unsigned long>(telemetrySnapshot.acceptedFrames),
+        static_cast<unsigned long>(telemetrySnapshot.lastObservedMs),
+        telemetrySnapshot.speedSeen ? "true" : "false",
+        telemetrySnapshot.speedKph, static_cast<unsigned int>(telemetrySnapshot.displaySpeed),
+        telemetrySnapshot.speedSeen ? now - telemetrySnapshot.speedMs : 0UL,
+        telemetrySnapshot.gearSeen ? "true" : "false",
+        static_cast<unsigned int>(telemetrySnapshot.gear),
+        telemetrySnapshot.autonomyActive ? "true" : "false",
+        telemetrySnapshot.gearSeen ? now - telemetrySnapshot.gearMs : 0UL,
+        telemetrySnapshot.steeringSeen ? "true" : "false",
+        telemetrySnapshot.steeringAngleDeg,
+        telemetrySnapshot.steeringSeen ? now - telemetrySnapshot.steeringMs : 0UL,
+        telemetrySnapshot.brakeSeen ? "true" : "false",
+        telemetrySnapshot.brakeApplied ? "true" : "false",
+        telemetrySnapshot.brakeSeen ? now - telemetrySnapshot.brakeMs : 0UL,
+        telemetrySnapshot.dasSeen ? "true" : "false",
+        static_cast<unsigned int>(telemetrySnapshot.apState),
+        static_cast<unsigned int>(telemetrySnapshot.handsOn),
+        telemetrySnapshot.dasSeen ? now - telemetrySnapshot.dasMs : 0UL,
+        telemetrySnapshot.dasStatus2Seen ? "true" : "false",
+        static_cast<unsigned int>(telemetrySnapshot.accReport),
+        telemetrySnapshot.dasStatus2Seen ? now - telemetrySnapshot.dasStatus2Ms : 0UL,
+        telemetrySnapshot.apLegacySeen ? "true" : "false",
+        telemetrySnapshot.apControlSeen ? "true" : "false",
+        telemetrySnapshot.dasSteeringSeen ? "true" : "false",
+        telemetrySnapshot.mapSeen ? "true" : "false",
+        telemetrySnapshot.bmsHvSeen ? "true" : "false",
+        telemetrySnapshot.bmsSocSeen ? "true" : "false",
+        telemetrySnapshot.bmsThermalSeen ? "true" : "false",
+        telemetrySnapshot.energySeen ? "true" : "false",
+        telemetrySnapshot.torqueSeen ? "true" : "false",
+        telemetrySnapshot.diStateSeen ? "true" : "false",
+        telemetrySnapshot.warningSeen ? "true" : "false",
+        telemetrySnapshot.tierSeen ? "true" : "false",
+        static_cast<unsigned int>(telemetrySnapshot.tier),
+        telemetrySnapshot.tierSeen ? now - telemetrySnapshot.tierMs : 0UL);
+    json.appendf(
+        ",\"driver\":%s,\"probe\":{\"active\":%s,\"state\":%u,\"id\":%lu,"
                  "\"mux\":%d,\"txa\":%lu,\"rxa\":%lu,\"txdlc\":%u,\"rxdlc\":%u,"
                  "\"hasrx\":%s,\"tx\":[",
                  driverJson, writeProbeSnapshot.active ? "true" : "false",
@@ -4286,6 +4455,7 @@ static void webTask(void *)
             server.handleClient();
 #endif
             dashCheckWifi();
+            dashEventTick();
         }
         catch (const std::bad_alloc &)
         {
@@ -4319,7 +4489,9 @@ static void dashInitHandlers()
     {
         handlerPool[i]->onFrame = mcpDashOnFrame;
     }
-    dashNagHandler.onFrame = mcpDashOnFrame;
+    // The active car handler already observes every original RX frame.
+    // A second Nag callback would duplicate DAS/steering/0x370 in telemetry/logs.
+    dashNagHandler.onFrame = nullptr;
 }
 
 static void dashSwapHandler(uint8_t mode)
@@ -4355,6 +4527,9 @@ static void dashSwapHandler(uint8_t mode)
     next->speedProfileAuto = (bool)dashSpeedProfileAuto;
     next->speedProfile = dashClampSpeedProfileForHw(hwMode, dashManualSpeedProfile);
     dashHandler = next;
+    dashTelemetry.setLayout(mode == 0 ? Chassis::DasLayout::LegacyHw3
+                                     : mode == 2 ? Chassis::DasLayout::StandardHw4
+                                                  : Chassis::DasLayout::LegacyHw3);
     dashApplyRuntimeState();
     appActiveHandler = next;
     // Preserve plugin acceptance IDs across handler changes.
@@ -4476,6 +4651,9 @@ static void mcpDashboardSetup(CarManagerBase *handler, CanDriver *driver)
     server.on("/gvret/stop", HTTP_POST, handleGvretStop);
 #endif
     server.on("/update", HTTP_POST, handleOtaResult, handleOtaUpload);
+    server.on("/diagnostics_detail", HTTP_GET, handleDiagnosticDetails);
+    server.on("/event_control", HTTP_POST, handleEventControl);
+    server.on("/event_download", HTTP_GET, handleEventDownload);
     server.on("/plugins", HTTP_GET, handlePluginList);
     server.on("/plugin_upload", HTTP_POST, handlePluginUpload);
     server.on("/plugin_install", HTTP_POST, handlePluginInstallFromUrl);

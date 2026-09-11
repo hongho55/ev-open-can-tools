@@ -353,10 +353,18 @@ struct LegacyHandler : public CarManagerBase
 {
     const uint32_t *filterIds() const override
     {
+#if defined(ESP32_DASHBOARD)
+        // Explicit hex IDs: BMS 0x292 is 658 decimal, not 292.
+        static constexpr uint32_t ids[] = {0x045, 0x108, 0x118, 0x129, 0x132, 0x145, 0x175, 0x186, 0x238, 0x257, 0x286, 0x292, 0x2B9, 0x311, 0x312, 0x33A, 0x370, 0x389, 0x399, 0x39B, 0x3EE, 0x3F8, 0x3FD, 0x488, 0x7FF};
+        return ids;
+    }
+    uint8_t filterIdCount() const override { return 25; }
+#else
         static constexpr uint32_t ids[] = {69, 280, 390, 599, 921, 1006, 1016};
         return ids;
     }
     uint8_t filterIdCount() const override { return 7; }
+#endif
 
     void handleMessage(CanFrame &frame, CanDriver &driver) override
     {
@@ -481,10 +489,18 @@ struct HW3Handler : public CarManagerBase
 {
     const uint32_t *filterIds() const override
     {
+#if defined(ESP32_DASHBOARD)
+        // Explicit hex IDs: BMS 0x292 is 658 decimal, not 292.
+        static constexpr uint32_t ids[] = {0x045, 0x108, 0x118, 0x129, 0x132, 0x145, 0x175, 0x186, 0x238, 0x257, 0x286, 0x292, 0x2B9, 0x311, 0x312, 0x33A, 0x370, 0x389, 0x399, 0x39B, 0x3EE, 0x3F8, 0x3FD, 0x488, 0x7FF};
+        return ids;
+    }
+    uint8_t filterIdCount() const override { return 25; }
+#else
         static constexpr uint32_t ids[] = {280, 390, 599, 921, 1016, 1021, 2047};
         return ids;
     }
     uint8_t filterIdCount() const override { return 7; }
+#endif
 
     void handleMessage(CanFrame &frame, CanDriver &driver) override
     {
@@ -1011,10 +1027,18 @@ struct HW4Handler : public CarManagerBase
     }
     uint8_t filterIdCount() const override { return 7; }
 #else
+#if defined(ESP32_DASHBOARD)
+        // Explicit hex IDs: BMS 0x292 is 658 decimal, not 292.
+        static constexpr uint32_t ids[] = {0x045, 0x108, 0x118, 0x129, 0x132, 0x145, 0x175, 0x186, 0x238, 0x257, 0x286, 0x292, 0x2B9, 0x311, 0x312, 0x33A, 0x370, 0x389, 0x399, 0x39B, 0x3EE, 0x3F8, 0x3FD, 0x488, 0x7FF};
+        return ids;
+    }
+    uint8_t filterIdCount() const override { return 25; }
+#else
         static constexpr uint32_t ids[] = {280, 390, 599, 923, 1016, 1021, 2047};
         return ids;
     }
     uint8_t filterIdCount() const override { return 7; }
+#endif
 #endif
 
     void handleMessage(CanFrame &frame, CanDriver &driver) override

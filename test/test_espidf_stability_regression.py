@@ -85,10 +85,25 @@ class EspIdfStabilityRegressionTests(unittest.TestCase):
         self.assertIn('id="nag-a"', self.ui)
         self.assertIn('id="nag-b"', self.ui)
         self.assertIn('id="nag-c"', self.ui)
-        self.assertIn("plugins are not used", self.ui)
+        self.assertIn("플러그인을 사용하지 않습니다", self.ui)
+
+    def test_juniper_hw4_catalog_uses_existing_plugins_and_installs_disabled(self) -> None:
+        for plugin_name in (
+            "ISA Chime Suppress HW4",
+            "Summon EU Unlock for all cars",
+            "FSD Activation HW4 (without TLSSC bypass)",
+            "Bypass TLSSC HW4 and include FSD activation",
+            "Emergency Vehicle Detection HW4 with FSD enabling",
+        ):
+            self.assertIn(plugin_name, self.ui)
+        self.assertIn("[[5,7],[7,10],[10,14],[15,21]]", self.ui)
+        self.assertIn("`HW4 Speed Offset +${offset}`", self.ui)
+        self.assertIn("ev-open-can-tools", self.ui)
+        self.assertIn("installCatalogPlugin", self.ui)
+        self.assertIn("temp.enabled = false", self.dashboard)
 
     def test_only_last_write_check_remains_from_removed_diagnostics(self) -> None:
-        self.assertIn("Last Write Check", self.ui)
+        self.assertIn("마지막 송신 확인", self.ui)
         for removed in ("CAN Sniffer", "CAN Recorder", "CAN Controller", "Live Log", "Rule Test", "Plugin Editor"):
             self.assertNotIn(removed, self.ui)
         for route in ('"/frames"', '"/log"', '"/rec_start"', '"/plugin_test"', '"/reset_stats"'):
@@ -139,7 +154,7 @@ class EspIdfStabilityRegressionTests(unittest.TestCase):
             self.dashboard.index("static void handleStatus()") :
             self.dashboard.index("static const char *dashWriteProbeStateName")
         ]
-        self.assertIn("char response[2304]", status)
+        self.assertIn("char response[3584]", status)
         self.assertIn("BoundedTextWriter", status)
         self.assertNotIn("String j", status)
         self.assertNotIn("setInterval(loadPlugins", self.ui)
