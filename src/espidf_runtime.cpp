@@ -311,7 +311,10 @@ void delay(uint32_t ms)
 
 void yield()
 {
-    taskYIELD();
+    // taskYIELD() only rotates tasks at the same priority. app_main runs
+    // above the idle task, so a tight receive poll can starve IDLE0 and trip
+    // the task watchdog while both CAN buses are quiet.
+    vTaskDelay(1);
 }
 
 uint32_t millis()
