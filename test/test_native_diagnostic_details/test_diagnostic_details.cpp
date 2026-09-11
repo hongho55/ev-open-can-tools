@@ -30,9 +30,9 @@ void test_diagnostic_details() {
     thermal.dlc=5; assert(!t.observe(thermal,121));
     hv.dlc=3; assert(!t.observe(hv,121));
     hv.dlc=8; hv.bus=CAN_BUS_CH; assert(!t.observe(hv,121));
-    // HW4 AP state is byte 0; keep byte 1 intentionally different so this
-    // fixture catches a decoder that accidentally reads the telemetry nibble.
-    auto das=frame(0x39B,CAN_BUS_CH); das.data[0]=0xA3; das.data[1]=0xF0;
+    // Standard HW4 AP state is byte 1 high nibble; keep byte 0 intentionally
+    // different so this fixture catches a decoder that reads the old layout.
+    auto das=frame(0x39B,CAN_BUS_CH); das.data[0]=0xA6; das.data[1]=0x30;
     das.data[2]=0x8C; das.data[4]=2; das.data[5]=0x88; das.data[6]=3;
     assert(t.observe(das,200)); s=t.snapshot(200);
     assert(s.apState==3 && s.handsOn==2 && s.laneChange==14);
