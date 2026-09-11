@@ -32,9 +32,9 @@ public:
     {
         // Initialize independently: one absent/faulted transceiver must not
         // take the other physical bus offline.
-        canAReady_ = canA_.init();
-        canBReady_ = canB_.init();
-        return canAReady_ || canBReady_;
+        const bool canAReady = canA_.init();
+        const bool canBReady = canB_.init();
+        return canAReady || canBReady;
     }
 
     void setFilters(const uint32_t *ids, uint8_t count) override
@@ -261,8 +261,6 @@ private:
 
     ESP32_MCP2515Driver canA_;
     TWAIDriver canB_;
-    bool canAReady_ = false;
-    bool canBReady_ = false;
     bool nextReadA_ = true;
     uint32_t canAErrorCount_ = 0;
     uint32_t canBErrorCount_ = 0;
