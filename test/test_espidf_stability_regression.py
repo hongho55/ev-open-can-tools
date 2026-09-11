@@ -1,3 +1,4 @@
+import re
 import unittest
 from pathlib import Path
 
@@ -154,7 +155,11 @@ class EspIdfStabilityRegressionTests(unittest.TestCase):
             self.dashboard.index("static void handleStatus()") :
             self.dashboard.index("static const char *dashWriteProbeStateName")
         ]
-        self.assertIn("char response[3584]", status)
+        response_match = re.search(r"\bchar response\[(\d+)\];", status)
+        self.assertIsNotNone(response_match)
+        response_size = int(response_match.group(1)) if response_match else 0
+        self.assertGreaterEqual(response_size, 4096)
+        self.assertIn("BoundedTextWriter json(response, sizeof(response));", status)
         self.assertIn("BoundedTextWriter", status)
         self.assertNotIn("String j", status)
         self.assertNotIn("setInterval(loadPlugins", self.ui)

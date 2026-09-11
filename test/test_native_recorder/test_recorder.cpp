@@ -5,6 +5,9 @@
 
 using namespace Chassis;
 
+void setUp() {}
+void tearDown() {}
+
 static CanFrame frame(uint32_t id, uint8_t bus, uint8_t dlc = 8)
 {
     CanFrame f{}; f.id = id; f.bus = bus; f.dlc = dlc; f.data[0] = 0xA5; return f;
