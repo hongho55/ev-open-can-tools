@@ -501,14 +501,16 @@ void File::moveFrom(File &other)
     basePath_ = std::move(other.basePath_);
     name_ = std::move(other.name_);
     writeError_ = other.writeError_;
+    readError_ = other.readError_;
     other.fp_ = nullptr;
     other.dir_ = nullptr;
     other.writeError_ = false;
+    other.readError_ = false;
 }
 
 bool File::close()
 {
-    bool ok = !writeError_;
+    bool ok = !writeError_ && !readError_;
     if (fp_)
         ok = std::fclose(fp_) == 0 && ok;
     if (dir_)
@@ -516,6 +518,7 @@ bool File::close()
     fp_ = nullptr;
     dir_ = nullptr;
     writeError_ = false;
+    readError_ = false;
     return ok;
 }
 
@@ -528,7 +531,26 @@ size_t File::write(const uint8_t *buf, size_t len)
 
 size_t File::read(uint8_t *buf, size_t len)
 {
-    return fp_ ? std::fread(buf, 1, len, fp_) : 0;
+    if (!fp_)
+    {
+        readError_ = true;
+        return 0;
+    }
+    size_t read = std::fread(buf, 1, len, fp_);
+    readError_ |= std::ferror(fp_) != 0;
+    return read;
+}
+
+size_t File::size() const
+{
+    if (!fp_)
+        return 0;
+    long current = std::ftell(fp_);
+    if (current < 0 || std::fseek(fp_, 0, SEEK_END) != 0)
+        return 0;
+    long end = std::ftell(fp_);
+    std::fseek(fp_, current, SEEK_SET);
+    return end >= 0 ? static_cast<size_t>(end) : 0;
 }
 
 String File::readString()
@@ -1396,6 +1418,7 @@ esp_err_t WebServer::handle(httpd_req_t *req)
 {
     requestCount_.fetch_add(1, std::memory_order_relaxed);
     currentReq_ = req;
+    responseFailed_ = false;
     try
     {
         std::string routeUri = req->uri;
@@ -1443,26 +1466,30 @@ esp_err_t WebServer::handle(httpd_req_t *req)
             }
         }
         route->handler();
+        const esp_err_t result = responseFailed_ ? ESP_FAIL : ESP_OK;
         currentReq_ = nullptr;
-        return ESP_OK;
+        return result;
     }
     catch (const std::bad_alloc &)
     {
-        send(500, "text/plain", "Out of memory");
+        if (!responseFailed_)
+            send(500, "text/plain", "Out of memory");
         currentReq_ = nullptr;
-        return ESP_OK;
+        return responseFailed_ ? ESP_FAIL : ESP_OK;
     }
     catch (const std::exception &)
     {
-        send(500, "text/plain", "Request failed");
+        if (!responseFailed_)
+            send(500, "text/plain", "Request failed");
         currentReq_ = nullptr;
-        return ESP_OK;
+        return responseFailed_ ? ESP_FAIL : ESP_OK;
     }
     catch (...)
     {
-        send(500, "text/plain", "Request failed");
+        if (!responseFailed_)
+            send(500, "text/plain", "Request failed");
         currentReq_ = nullptr;
-        return ESP_OK;
+        return responseFailed_ ? ESP_FAIL : ESP_OK;
     }
 }
 
@@ -1522,6 +1549,9 @@ void WebServer::sendRaw(int code, const char *type, const char *body, size_t len
     case 404:
         status = "404 Not Found";
         break;
+    case 409:
+        status = "409 Conflict";
+        break;
     case 413:
         status = "413 Payload Too Large";
         break;
@@ -1566,17 +1596,38 @@ void WebServer::sendHeader(const char *name, const char *value)
     headers_.push_back({name ? name : "", value ? value : ""});
 }
 
-void WebServer::streamFile(File &file, const char *type)
+bool WebServer::streamFile(File &file, const char *type, size_t &sentBytes)
 {
+    sentBytes = 0;
     if (!currentReq_)
-        return;
+    {
+        responseFailed_ = true;
+        return false;
+    }
     httpd_resp_set_type(currentReq_, type);
     applyHeaders();
     uint8_t buf[512];
     size_t n = 0;
     while ((n = file.read(buf, sizeof(buf))) > 0)
-        httpd_resp_send_chunk(currentReq_, reinterpret_cast<const char *>(buf), n);
-    httpd_resp_send_chunk(currentReq_, nullptr, 0);
+    {
+        if (httpd_resp_send_chunk(currentReq_, reinterpret_cast<const char *>(buf), n) != ESP_OK)
+        {
+            responseFailed_ = true;
+            return false;
+        }
+        sentBytes += n;
+    }
+    if (file.hasReadError())
+    {
+        responseFailed_ = true;
+        return false;
+    }
+    if (httpd_resp_send_chunk(currentReq_, nullptr, 0) != ESP_OK)
+    {
+        responseFailed_ = true;
+        return false;
+    }
+    return true;
 }
 
 static std::string basicAuthValue(const char *user, const char *pass)

@@ -192,8 +192,53 @@ def _sync_sdkconfig_flash_size(env_obj, project_dir):
         sdkconfig_path.write_text(updated, encoding="utf-8")
 
 
+def _sync_t2can_psram(env_obj, project_dir):
+    """Keep an existing generated sdkconfig aligned with the N16R8 board."""
+    if env_obj["PIOENV"] != "lilygo_t2can":
+        return
+
+    sdkconfig_path = project_dir / "sdkconfig.lilygo_t2can"
+    if not sdkconfig_path.exists():
+        return  # Target-specific SDKCONFIG_DEFAULTS initializes a fresh build.
+
+    enabled = (
+        "CONFIG_SPIRAM",
+        "CONFIG_SPIRAM_MODE_OCT",
+        "CONFIG_SPIRAM_TYPE_AUTO",
+        "CONFIG_SPIRAM_SPEED_80M",
+        "CONFIG_SPIRAM_BOOT_HW_INIT",
+        "CONFIG_SPIRAM_BOOT_INIT",
+        "CONFIG_SPIRAM_IGNORE_NOTFOUND",
+        "CONFIG_SPIRAM_USE_CAPS_ALLOC",
+        "CONFIG_SPIRAM_MEMTEST",
+    )
+    disabled = (
+        "CONFIG_SPIRAM_MODE_QUAD",
+        "CONFIG_SPIRAM_SPEED_40M",
+        "CONFIG_SPIRAM_SPEED_120M",
+        "CONFIG_SPIRAM_USE_MEMMAP",
+        "CONFIG_SPIRAM_USE_MALLOC",
+    )
+    names = set(enabled + disabled)
+    lines = sdkconfig_path.read_text(encoding="utf-8").splitlines()
+    lines = [
+        line
+        for line in lines
+        if not any(
+            line.startswith(name + "=") or line == f"# {name} is not set"
+            for name in names
+        )
+    ]
+    lines.extend(f"{name}=y" for name in enabled)
+    lines.extend(f"# {name} is not set" for name in disabled)
+    updated = "\n".join(lines) + "\n"
+    if updated != sdkconfig_path.read_text(encoding="utf-8"):
+        sdkconfig_path.write_text(updated, encoding="utf-8")
+
+
 project_dir = Path(env["PROJECT_DIR"])
 _sync_sdkconfig_flash_size(env, project_dir)
+_sync_t2can_psram(env, project_dir)
 config_path = Path(
     env.GetProjectOption("custom_profile_path", CONFIG_RELATIVE_PATH.as_posix())
 )

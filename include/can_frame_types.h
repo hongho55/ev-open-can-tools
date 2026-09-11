@@ -27,4 +27,7 @@ struct CanFrame
     uint8_t dlc = 8;
     uint8_t data[8] = {};
     uint8_t bus = CAN_BUS_ANY;
+    // Physical provenance is observational metadata and must not replace the
+    // semantic bus mask consumed by handlers and plugins.
+    uint8_t physicalBus = CAN_BUS_ANY;
 };

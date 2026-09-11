@@ -19,6 +19,9 @@ public:
     TWAIDriver(gpio_num_t txPin, gpio_num_t rxPin)
         : txPin_(txPin), rxPin_(rxPin), mutex_(xSemaphoreCreateMutex()) {}
 
+    bool reportsPhysicalTxAttempts() const override { return true; }
+    uint8_t physicalBus() const override { return CAN_BUS_CAN_B; }
+
     ~TWAIDriver() override
     {
         if (mutex_)
@@ -159,6 +162,7 @@ public:
                 continue;
 
             frame.id = msg.identifier;
+            frame.physicalBus = physicalBus();
             frame.dlc = (msg.data_length_code <= 8) ? msg.data_length_code : 8;
             memset(frame.data, 0, 8);
             memcpy(frame.data, msg.data, frame.dlc);
@@ -170,12 +174,21 @@ public:
 
     bool send(const CanFrame &frame) override
     {
+        bool attempted = false;
+        return sendWithAttempt(frame, attempted);
+    }
+
+    bool sendWithAttempt(const CanFrame &frame, bool &attempted) override
+    {
+        attempted = false;
         if (simLoopback_)
         {
             // Dev/test mode: pretend the frame went out so TX counters/sniffer
             // light up, but never touch the (absent) transceiver.
             if (onSendFrame)
                 onSendFrame(frame, true);
+            if (onSendAttempt)
+                onSendAttempt(frame, true, false);
             return true;
         }
 
@@ -183,6 +196,8 @@ public:
         {
             if (onSendFrame)
                 onSendFrame(frame, false);
+            if (onSendAttempt)
+                onSendAttempt(frame, false, false);
             return false;
         }
         lock();
@@ -191,6 +206,8 @@ public:
             unlock();
             if (onSendFrame)
                 onSendFrame(frame, false);
+            if (onSendAttempt)
+                onSendAttempt(frame, false, false);
             return false;
         }
         if (!serviceBusStateLocked())
@@ -198,6 +215,8 @@ public:
             unlock();
             if (onSendFrame)
                 onSendFrame(frame, false);
+            if (onSendAttempt)
+                onSendAttempt(frame, false, false);
             return false;
         }
 
@@ -210,6 +229,7 @@ public:
         // Short timeout (2ms): modified frames should not be dropped, but
         // long blocks (10ms) risk overflowing the 32-deep RX queue.
         // At 500kbps, ~8 frames arrive in 2ms — queue handles this fine.
+        attempted = true;
         esp_err_t txErr = twai_transmit(&msg, pdMS_TO_TICKS(2));
         bool ok = txErr == ESP_OK;
         if (!ok)
@@ -230,6 +250,12 @@ public:
         unlock();
         if (onSendFrame)
             onSendFrame(frame, ok);
+        if (onSendAttempt)
+        {
+            CanFrame physical = frame;
+            physical.physicalBus = physicalBus();
+            onSendAttempt(physical, ok, attempted);
+        }
         return ok;
     }
 
@@ -266,6 +292,21 @@ public:
                  static_cast<int>(lastStartErr_), static_cast<int>(lastReceiveErr_),
                  static_cast<int>(lastTransmitErr_));
         unlock();
+    }
+
+    uint32_t healthErrorCount() const override
+    {
+        lock();
+        twai_status_info_t status = {};
+        const bool hasStatus = driverInstalled_ && twai_get_status_info(&status) == ESP_OK;
+        const twai_status_info_t &s = hasStatus ? status : lastStatus_;
+        const uint32_t total = static_cast<uint32_t>(s.bus_error_count) +
+                               static_cast<uint32_t>(s.rx_missed_count) +
+                               static_cast<uint32_t>(s.rx_overrun_count) +
+                               static_cast<uint32_t>(s.arb_lost_count) +
+                               receiveErrors_ + transmitErrors_;
+        unlock();
+        return total;
     }
 
     void diagnosticsSummary(char *out, size_t outLen) const override

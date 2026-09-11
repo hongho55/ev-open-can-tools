@@ -73,14 +73,14 @@ public:
         CanFrame candidate;
         if (nextReadA_)
         {
-            if (readFrom(canA_, DualCanRouting::canABusLabel(), candidate))
+            if (readFrom(canA_, DualCanRouting::canABusLabel(), CAN_BUS_CAN_A, candidate))
             {
                 canARxCount_++;
                 frame = candidate;
                 nextReadA_ = false;
                 return true;
             }
-            if (readFrom(canB_, DualCanRouting::canBBusLabel(), candidate))
+            if (readFrom(canB_, DualCanRouting::canBBusLabel(), CAN_BUS_CAN_B, candidate))
             {
                 canBRxCount_++;
                 frame = candidate;
@@ -90,14 +90,14 @@ public:
         }
         else
         {
-            if (readFrom(canB_, DualCanRouting::canBBusLabel(), candidate))
+            if (readFrom(canB_, DualCanRouting::canBBusLabel(), CAN_BUS_CAN_B, candidate))
             {
                 canBRxCount_++;
                 frame = candidate;
                 nextReadA_ = true;
                 return true;
             }
-            if (readFrom(canA_, DualCanRouting::canABusLabel(), candidate))
+            if (readFrom(canA_, DualCanRouting::canABusLabel(), CAN_BUS_CAN_A, candidate))
             {
                 canARxCount_++;
                 frame = candidate;
@@ -111,11 +111,11 @@ public:
     bool send(const CanFrame &frame) override
     {
         if (!sendAllowed(frame))
-            return reportSend(frame, false);
+            return reportDenied(frame);
 
         const DualCanRouting::Targets targets = DualCanRouting::targetsForBus(frame.bus);
         if (!targets.canA && !targets.canB)
-            return reportSend(frame, false);
+            return reportDenied(frame);
 
         // Do not short-circuit: an explicit combined mask must attempt both
         // physical buses and report aggregate success.
@@ -123,15 +123,45 @@ public:
         bool okB = true;
         if (targets.canA)
         {
-            okA = canA_.send(frame);
+            bool attemptedA = false;
+            okA = canA_.sendWithAttempt(frame, attemptedA);
             okA ? canATxCount_++ : canAErrorCount_++;
+            reportAttempt(frame, CAN_BUS_CAN_A, okA, attemptedA);
         }
         if (targets.canB)
         {
-            okB = canB_.send(frame);
+            bool attemptedB = false;
+            okB = canB_.sendWithAttempt(frame, attemptedB);
             okB ? canBTxCount_++ : canBErrorCount_++;
+            reportAttempt(frame, CAN_BUS_CAN_B, okB, attemptedB);
         }
         return reportSend(frame, okA && okB);
+    }
+
+    bool reportsPhysicalTxAttempts() const override { return true; }
+
+    bool physicalHealth(uint8_t bus, bool &ready, uint32_t &errors) const override
+    {
+        if (bus == CAN_BUS_CAN_A)
+        {
+            ready = canA_.ready();
+            errors = canAErrorCount_ + canA_.healthErrorCount();
+            return true;
+        }
+        if (bus == CAN_BUS_CAN_B)
+        {
+            ready = canB_.ready();
+            errors = canBErrorCount_ + canB_.healthErrorCount();
+            return true;
+        }
+        if (bus == CAN_BUS_ANY)
+        {
+            ready = canA_.ready() || canB_.ready();
+            errors = canAErrorCount_ + canBErrorCount_ +
+                     canA_.healthErrorCount() + canB_.healthErrorCount();
+            return true;
+        }
+        return false;
     }
 
     void diagnosticsJson(char *out, size_t outLen) const override
@@ -197,11 +227,12 @@ public:
     TWAIDriver &canB() { return canB_; }
 
 private:
-    static bool readFrom(CanDriver &child, uint8_t busLabel, CanFrame &frame)
+    static bool readFrom(CanDriver &child, uint8_t busLabel, uint8_t physicalBus, CanFrame &frame)
     {
         if (!child.read(frame))
             return false;
         frame.bus = busLabel;
+        frame.physicalBus = physicalBus;
         return true;
     }
 
@@ -210,6 +241,22 @@ private:
         if (onSendFrame)
             onSendFrame(frame, ok);
         return ok;
+    }
+
+    bool reportDenied(const CanFrame &frame)
+    {
+        if (onSendAttempt)
+            onSendAttempt(frame, false, false);
+        return reportSend(frame, false);
+    }
+
+    void reportAttempt(const CanFrame &frame, uint8_t bus, bool ok, bool attempted)
+    {
+        if (!onSendAttempt)
+            return;
+        CanFrame physical = frame;
+        physical.physicalBus = bus;
+        onSendAttempt(physical, ok, attempted);
     }
 
     ESP32_MCP2515Driver canA_;

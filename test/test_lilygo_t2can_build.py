@@ -19,6 +19,9 @@ class LilygoT2CanBuildTests(unittest.TestCase):
         cls.sync = (ROOT / "scripts/platformio_sync_profile.py").read_text(
             encoding="utf-8"
         )
+        cls.psram_defaults = (
+            ROOT / "sdkconfig.defaults.lilygo_t2can"
+        ).read_text(encoding="utf-8")
 
     def test_board_environment_uses_both_physical_can_buses(self) -> None:
         environment = self.platformio.split("[env:lilygo_t2can]", 1)[1].split(
@@ -35,6 +38,14 @@ class LilygoT2CanBuildTests(unittest.TestCase):
         self.assertIn("-DTWAI_TX_PIN=GPIO_NUM_7", environment)
         self.assertIn("-DTWAI_RX_PIN=GPIO_NUM_6", environment)
         self.assertIn("partitions_16mb_ota_4096k_nvs64.csv", environment)
+        self.assertIn("sdkconfig.defaults.lilygo_t2can", environment)
+
+    def test_board_enables_optional_opi_psram_with_safe_fallback(self) -> None:
+        self.assertIn("CONFIG_SPIRAM=y", self.psram_defaults)
+        self.assertIn("CONFIG_SPIRAM_MODE_OCT=y", self.psram_defaults)
+        self.assertIn("CONFIG_SPIRAM_IGNORE_NOTFOUND=y", self.psram_defaults)
+        self.assertIn("CONFIG_SPIRAM_USE_CAPS_ALLOC=y", self.psram_defaults)
+        self.assertIn("_sync_t2can_psram", self.sync)
 
     def test_board_hardware_resets_mcp2515(self) -> None:
         self.assertIn("#ifdef PIN_CAN_RESET", self.main)

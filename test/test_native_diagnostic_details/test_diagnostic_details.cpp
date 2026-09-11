@@ -30,7 +30,9 @@ void test_diagnostic_details() {
     thermal.dlc=5; assert(!t.observe(thermal,121));
     hv.dlc=3; assert(!t.observe(hv,121));
     hv.dlc=8; hv.bus=CAN_BUS_CH; assert(!t.observe(hv,121));
-    auto das=frame(0x39B,CAN_BUS_CH); das.data[1]=0x30;
+    // HW4 AP state is byte 0; keep byte 1 intentionally different so this
+    // fixture catches a decoder that accidentally reads the telemetry nibble.
+    auto das=frame(0x39B,CAN_BUS_CH); das.data[0]=0xA3; das.data[1]=0xF0;
     das.data[2]=0x8C; das.data[4]=2; das.data[5]=0x88; das.data[6]=3;
     assert(t.observe(das,200)); s=t.snapshot(200);
     assert(s.apState==3 && s.handsOn==2 && s.laneChange==14);
@@ -48,15 +50,16 @@ void test_diagnostic_details() {
     assert(r.mark(EventRecorder::Trigger::Manual,300));
     assert(!r.mark(EventRecorder::Trigger::CanError,301));
     for (unsigned i=300;i<364;++i) r.observe(f,i);
-    assert(r.frozen() && r.count()==256);
+    assert(!r.frozen());
+    r.tick(10300); assert(r.frozen() && r.count()==256);
     EventRecorder::Entry e; assert(r.entry(0,e) && e.ms==108);
     assert(r.entry(255,e) && e.ms==363); assert(!r.entry(256,e));
-    r.observe(f,400); assert(r.entry(255,e) && e.ms==363);
-    r.clear(); r.noteAp(3,500); r.noteAp(8,501); r.tick(2501);
+    r.observe(f,10400); assert(r.entry(255,e) && e.ms==363);
+    r.clear(); r.noteAp(3,500); r.noteAp(8,501); r.tick(10501);
     assert(r.frozen());
     r.enable(false); assert(!r.mark(EventRecorder::Trigger::Manual,2600));
     r.enable(true); auto unknown=frame(0x123); r.observe(unknown,1); assert(r.count()==0);
-    assert(r.mark(EventRecorder::Trigger::CanError,0xFFFFFFF0)); r.tick(0x800);
+    assert(r.mark(EventRecorder::Trigger::CanError,0xFFFFFFF0)); r.tick(0x2800);
     assert(r.frozen());
 }
 

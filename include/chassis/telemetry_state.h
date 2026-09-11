@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "../can_helpers.h"
 #include "signals.h"
 
 namespace Chassis
@@ -221,7 +222,7 @@ private:
         case 0x39B: // Standard HW4 DAS layout only
             if (layout_ != DasLayout::StandardHw4 || frame.dlc != 8) return false;
             snapshot_.dasSeen = true;
-            snapshot_.apState = (frame.data[1] >> 4) & 0x0F;
+            snapshot_.apState = readHW4DASAutopilotStatus(frame);
             snapshot_.handsOn = (frame.data[5] >> 2) & 0x0F;
             decodeDas(frame);
             snapshot_.dasMs = nowMs;
@@ -303,7 +304,7 @@ private:
             snapshot_.bmsThermalMs = nowMs;
             break;
         case 0x108:
-            if (!hasDlc(frame, 1)) return false;
+            if (!hasDlc(frame, 2)) return false;
             snapshot_.torqueSeen = accepted = true;
             snapshot_.torqueMs = nowMs;
             break;

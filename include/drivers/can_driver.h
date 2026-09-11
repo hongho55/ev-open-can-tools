@@ -7,6 +7,10 @@
 struct CanDriver
 {
     void (*onSendFrame)(const CanFrame &, bool ok) = nullptr;
+    // Optional physical-attempt observation. For aggregate drivers, the frame
+    // carries the physical bus label when attempted is true; attempted=false
+    // represents a denied request with no physical transmission.
+    void (*onSendAttempt)(const CanFrame &, bool ok, bool attempted) = nullptr;
     bool (*allowSendFrame)(const CanFrame &) = nullptr;
 
     virtual bool init() = 0;
@@ -14,6 +18,14 @@ struct CanDriver
     virtual bool enableInterrupt(void (*onReady)()) = 0;
     virtual bool read(CanFrame &frame) = 0;
     virtual bool send(const CanFrame &frame) = 0;
+    // Hardware-capable drivers may provide the attempt result for this
+    // invocation. The output is call-local so concurrent sends cannot
+    // overwrite another send's attribution.
+    virtual bool sendWithAttempt(const CanFrame &frame, bool &attempted)
+    {
+        attempted = false;
+        return send(frame);
+    }
     virtual bool ready() const { return true; }
     virtual void setMonitorAll(bool) {}
     virtual void clearPendingTransmit() {}
@@ -28,6 +40,17 @@ struct CanDriver
     // does not accumulate TX errors. No-op by default; drivers that talk to
     // hardware override this.
     virtual void setSimLoopback(bool /*enabled*/) {}
+    virtual bool reportsPhysicalTxAttempts() const { return false; }
+    virtual uint8_t physicalBus() const { return CAN_BUS_ANY; }
+    virtual bool physicalHealth(uint8_t bus, bool &ready, uint32_t &errors) const
+    {
+        if (bus != CAN_BUS_ANY)
+            return false;
+        ready = this->ready();
+        errors = healthErrorCount();
+        return true;
+    }
+    virtual uint32_t healthErrorCount() const { return 0; }
 
     virtual void diagnosticsJson(char *out, size_t outLen) const
     {

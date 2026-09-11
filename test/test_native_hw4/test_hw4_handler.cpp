@@ -1,12 +1,25 @@
+#include <cstdint>
 #include <unity.h>
 #include "can_frame_types.h"
 #include "drivers/can_driver.h"
 #include "can_helpers.h"
 #include "handlers.h"
+#include "chassis/event_recorder.h"
 #include "drivers/mock_driver.h"
 
 static MockDriver mock;
 static HW4Handler handler;
+static Chassis::EventRecorder *profileRecorder = nullptr;
+static int observedProfile = -1;
+static int observedProfileChanges = 0;
+
+static void observeSpeedProfile(uint8_t profile)
+{
+    observedProfile = profile;
+    observedProfileChanges++;
+    if (profileRecorder)
+        profileRecorder->recordSetting(5, profile, handler.speedProfileChangeMs);
+}
 
 static bool denyInjection()
 {
@@ -18,6 +31,10 @@ void setUp()
     mock.reset();
     handler = HW4Handler();
     handler.enablePrint = false;
+    handler.onSpeedProfileChanged = observeSpeedProfile;
+    profileRecorder = nullptr;
+    observedProfile = -1;
+    observedProfileChanges = 0;
     bypassTlsscRequirementRuntime = kBypassTlsscRequirementDefaultEnabled;
     isaSpeedChimeSuppressRuntime = kIsaSpeedChimeSuppressDefaultEnabled;
     emergencyVehicleDetectionRuntime = kEmergencyVehicleDetectionDefaultEnabled;
@@ -66,6 +83,42 @@ void test_hw4_follow_distance_5_sets_profile_4()
     f.data[5] = 0b10100000; // fd = 5
     handler.handleMessage(f, mock);
     TEST_ASSERT_EQUAL_INT(4, handler.speedProfile);
+}
+
+void test_hw4_auto_profile_notifies_observer_after_transition()
+{
+    handler.speedProfile = 1;
+    CanFrame f = {.id = 1016};
+    f.data[5] = 0b00100000; // fd = 1 -> profile 3
+    handler.handleMessage(f, mock);
+    TEST_ASSERT_EQUAL_INT(3, observedProfile);
+    TEST_ASSERT_EQUAL_INT(1, observedProfileChanges);
+
+    handler.handleMessage(f, mock);
+    TEST_ASSERT_EQUAL_INT(1, observedProfileChanges);
+}
+
+void test_hw4_auto_profile_reaches_frozen_recorder_configuration()
+{
+    Chassis::EventRecorder recorder;
+    recorder.enable(true);
+    profileRecorder = &recorder;
+    handler.speedProfile = 1;
+
+    CanFrame f = {.id = 1016, .dlc = 8};
+    f.data[5] = 0b00100000; // fd = 1 -> profile 3
+    handler.handleMessage(f, mock);
+    TEST_ASSERT_EQUAL_INT(3, observedProfile);
+    TEST_ASSERT_EQUAL_INT(1, recorder.effectiveSettingCount());
+
+    TEST_ASSERT_TRUE(recorder.mark(Chassis::EventRecorder::Trigger::Manual, 100));
+    recorder.tick(10100);
+    TEST_ASSERT_TRUE(recorder.frozen());
+    Chassis::EventRecorder::EffectiveSetting setting;
+    TEST_ASSERT_TRUE(recorder.effectiveSetting(0, setting));
+    TEST_ASSERT_EQUAL_INT(5, setting.setting);
+    TEST_ASSERT_EQUAL_INT(3, setting.value);
+    profileRecorder = nullptr;
 }
 
 void test_hw4_manual_profile_ignores_follow_distance()
@@ -454,6 +507,8 @@ int main()
     RUN_TEST(test_hw4_follow_distance_3_sets_profile_1);
     RUN_TEST(test_hw4_follow_distance_4_sets_profile_0);
     RUN_TEST(test_hw4_follow_distance_5_sets_profile_4);
+    RUN_TEST(test_hw4_auto_profile_notifies_observer_after_transition);
+    RUN_TEST(test_hw4_auto_profile_reaches_frozen_recorder_configuration);
     RUN_TEST(test_hw4_manual_profile_ignores_follow_distance);
 
     RUN_TEST(test_hw4_AD_enabled_only_set_on_mux0);

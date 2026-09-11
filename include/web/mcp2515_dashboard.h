@@ -16,10 +16,12 @@
 #include <exception>
 #include <new>
 #include <memory>
+#include <cstdlib>
 #include <soc/soc_caps.h>
 #ifdef ESP_PLATFORM
 #include <esp_mac.h>
 #include <freertos/semphr.h>
+#include <psa/crypto.h>
 #endif
 #ifndef ESP_PLATFORM
 #include <Preferences.h>
@@ -108,6 +110,17 @@ static bool dashCanPinReserved(int pin)
 
 #define PREFS_NS "ADunlock"
 static constexpr uint8_t kDashUnsetU8 = 0xFF;
+static constexpr uint16_t kRecorderSettingInjection = 1;
+static constexpr uint16_t kRecorderSettingHardware = 2;
+static constexpr uint16_t kRecorderSettingCan = 3;
+static constexpr uint16_t kRecorderSettingSpeedAuto = 4;
+static constexpr uint16_t kRecorderSettingSpeedProfile = 5;
+static constexpr uint16_t kRecorderSettingApGate = 6;
+static constexpr uint16_t kRecorderSettingSummonOnly = 7;
+static constexpr uint16_t kRecorderSettingNagMode = 8;
+static constexpr uint16_t kRecorderSettingReplayCount = 9;
+static constexpr uint16_t kRecorderSettingOffsetSlew = 10;
+static constexpr uint16_t kRecorderSettingOffsetSlewRate = 11;
 
 static Preferences prefs;
 
@@ -246,6 +259,45 @@ static CanDriver *dashDriver = nullptr;
 // state never feeds a transmit path; it is only exposed through /status.
 static Chassis::TelemetryState dashTelemetry{Chassis::DasLayout::Unknown, 1500};
 static Chassis::EventRecorder dashRecorder;
+class DashRecorderConfigUpdate
+{
+public:
+    explicit DashRecorderConfigUpdate(Chassis::EventRecorder &recorder) : recorder_(recorder)
+    {
+        DashDataGuard guard;
+        recorder_.beginConfigurationUpdate();
+    }
+
+    ~DashRecorderConfigUpdate()
+    {
+        DashDataGuard guard;
+        recorder_.endConfigurationUpdate(millis());
+    }
+
+    DashRecorderConfigUpdate(const DashRecorderConfigUpdate &) = delete;
+    DashRecorderConfigUpdate &operator=(const DashRecorderConfigUpdate &) = delete;
+
+private:
+    Chassis::EventRecorder &recorder_;
+};
+static bool dashIncidentPersisted = false;
+static bool dashIncidentPersistFailure = false;
+static uint32_t dashPersistedGeneration = 0;
+static uint32_t dashPersistFailureGeneration = 0;
+static bool dashPersistInProgress = false;
+static char dashIncidentPath[64] = "/incident.jsonl";
+static uint32_t dashIncidentEvictions = 0;
+static uint16_t dashIncidentPendingCount = 0;
+static uint16_t dashIncidentAcknowledgedCount = 0;
+static size_t dashIncidentStorageTotalBytes = 0;
+static size_t dashIncidentStorageFreeBytes = 0;
+static bool dashIncidentStoragePressure = false;
+static char dashIncidentLastError[48] = {};
+static constexpr size_t kDashIncidentSafetyFreeBytes = 256 * 1024;
+static constexpr size_t kDashIncidentListLimit = 16;
+static constexpr size_t kDashIncidentAckTombstoneLimit = 128;
+static bool dashCanSeen = false;
+static uint32_t dashCanLossGeneration = 0;
 #if defined(DRIVER_ESP32_EXT_MCP2515)
 static ESP32_MCP2515Driver *dashMcpDriver = nullptr;
 #endif
@@ -364,7 +416,10 @@ static void dashSwapHandler(uint8_t mode);
 static void dashApplyFilters();
 static void dashReapplyFiltersWithPlugins();
 static uint8_t dashCollectMergedFilterIds(uint32_t *ids, uint8_t maxIds);
-static void dashApplyRuntimeState();
+static void dashApplyRuntimeState(bool refreshLed = true);
+static void dashRecordEffectiveConfiguration();
+static void dashRecordEffectiveConfigurationAt(uint32_t now, uint8_t replayCount);
+static void mcpDashOnActiveSpeedProfile(uint8_t profile);
 static void dashRestorePluginStates();
 static void dashClearLegacyOptionPrefs();
 static void dashSchedulePluginStateSave(unsigned long delayMs = 750);
@@ -435,10 +490,20 @@ static void mcpDashOnFrame(const CanFrame &f)
     unsigned long now = millis();
     const bool telemetryAccepted = dashTelemetry.observe(f, now);
     dashRecorder.observe(f, now);
+    const Chassis::TelemetrySnapshot telemetry = dashTelemetry.snapshot(now);
     if (telemetryAccepted && (f.id == 0x399 || f.id == 0x39B))
-        dashRecorder.noteAp(dashTelemetry.snapshot(now).apState, now);
+        dashRecorder.noteAp(telemetry.apState, now);
+    if (telemetry.dasSeen)
+        dashRecorder.recordNag(dashNagMode, now);
+    if (telemetryAccepted && f.id == 0x108 && telemetry.torqueSeen && f.dlc >= 2)
+    {
+        const uint16_t torqueRaw =
+            (static_cast<uint16_t>(f.data[1] & 0x1F) << 8) | f.data[0];
+        dashRecorder.recordTorque(torqueRaw, now);
+    }
     lastFrameMs = now;
     canOnline = true;
+    dashCanSeen = true;
     if (dashWriteProbe.active && dashWriteProbe.state != kDashWriteProbeFailed && dashWriteProbeMatches(f))
     {
         dashWriteProbe.hasRx = true;
@@ -455,19 +520,63 @@ static void mcpDashOnFrame(const CanFrame &f)
 static void mcpDashOnTxFrame(const CanFrame &frame, bool ok)
 {
     DashDataGuard guard;
+    const uint32_t now = millis();
+    if (!dashDriver || !dashDriver->reportsPhysicalTxAttempts())
+        dashRecorder.observeTx(frame, ok, now);
     int8_t mux = dashFrameMux(frame);
     dashWriteProbe.active = true;
     dashWriteProbe.hasRx = false;
     dashWriteProbe.state = ok ? kDashWriteProbePending : kDashWriteProbeFailed;
     dashWriteProbe.id = frame.id;
     dashWriteProbe.mux = mux;
-    dashWriteProbe.txMs = millis();
+    dashWriteProbe.txMs = now;
     dashWriteProbe.rxMs = 0;
     dashWriteProbe.txDlc = (frame.dlc <= 8) ? frame.dlc : 8;
     dashWriteProbe.rxDlc = 0;
     memset(dashWriteProbe.txData, 0, sizeof(dashWriteProbe.txData));
     memset(dashWriteProbe.rxData, 0, sizeof(dashWriteProbe.rxData));
     memcpy(dashWriteProbe.txData, frame.data, dashWriteProbe.txDlc);
+}
+
+static void mcpDashOnTxAttemptFrame(const CanFrame &frame, bool ok, bool attempted)
+{
+    DashDataGuard guard;
+    dashRecorder.observeTx(frame, ok, millis(), attempted);
+}
+
+static void mcpDashOnInjectionDecision(bool allowed, const char *reason)
+{
+    uint16_t code = 0;
+    if (reason && strcmp(reason, "startup_or_can_stale") == 0) code = 1;
+    else if (reason && strcmp(reason, "handler_unavailable") == 0) code = 2;
+    else if (reason && strcmp(reason, "summon_policy_blocked") == 0) code = 3;
+    else if (reason && strcmp(reason, "can_disabled") == 0) code = 4;
+    else if (reason && strcmp(reason, "ap_gate_blocked") == 0) code = 5;
+    else if (reason && strcmp(reason, "nag_disabled") == 0) code = 6;
+    DashDataGuard guard;
+    dashRecorder.recordInjectionDecision(allowed, code, millis());
+}
+
+static void mcpDashRecordCanHealth()
+{
+    if (!dashDriver)
+        return;
+    bool readyA = false, readyB = false, readyAny = false;
+    uint32_t errorsA = 0, errorsB = 0, errorsAny = 0;
+    const bool hasA = dashDriver->physicalHealth(CAN_BUS_CAN_A, readyA, errorsA);
+    const bool hasB = dashDriver->physicalHealth(CAN_BUS_CAN_B, readyB, errorsB);
+    if (!hasA && !hasB && dashDriver->physicalHealth(CAN_BUS_ANY, readyAny, errorsAny))
+    {
+        DashDataGuard guard;
+        dashRecorder.recordCanHealth(2, readyAny, errorsAny, millis());
+        return;
+    }
+    DashDataGuard guard;
+    const uint32_t recordNow = millis();
+    if (hasA)
+        dashRecorder.recordCanHealth(0, readyA, errorsA, recordNow);
+    if (hasB)
+        dashRecorder.recordCanHealth(1, readyB, errorsB, recordNow);
 }
 
 // JSON escape for log strings
@@ -529,6 +638,8 @@ static bool dashParseBool(const String &text, bool &value)
 
 static bool dashCheckADEnabled()
 {
+    if (!canActive && appDashboardDecisionObserver)
+        appDashboardDecisionObserver(false, "can_disabled");
     return canActive;
 }
 
@@ -661,12 +772,47 @@ static void dashRefreshSummonOnlyPolicy()
 
 static bool dashInjectionActive()
 {
-    return canActive && appInjectionReady() && dashApInjectionAllowed() &&
-           dashSummonOnlyInjectionAllowed();
+    const bool canEnabled = canActive;
+    if (!canEnabled)
+    {
+        if (appDashboardDecisionObserver)
+            appDashboardDecisionObserver(false, "can_disabled");
+        return false;
+    }
+
+    const bool canReady = appInjectionReady();
+    if (!canReady)
+    {
+        if (appDashboardDecisionObserver)
+            appDashboardDecisionObserver(false, "startup_or_can_stale");
+        return false;
+    }
+
+    const bool apAllowed = dashApInjectionAllowed();
+    if (!apAllowed)
+    {
+        if (appDashboardDecisionObserver)
+            appDashboardDecisionObserver(false, "ap_gate_blocked");
+        return false;
+    }
+
+    const bool summonAllowed = dashSummonOnlyInjectionAllowed();
+    if (!summonAllowed)
+    {
+        if (appDashboardDecisionObserver)
+            appDashboardDecisionObserver(false, "summon_policy_blocked");
+        return false;
+    }
+
+    if (appDashboardDecisionObserver)
+        appDashboardDecisionObserver(true, "allowed");
+    return true;
 }
 
 static bool dashCheckNagDisabled()
 {
+    if (appDashboardDecisionObserver)
+        appDashboardDecisionObserver(false, "nag_disabled");
     return false;
 }
 
@@ -770,7 +916,7 @@ static bool dashApplyHw3OffsetSlew(CanFrame &modified, const CanFrame & /*origin
     return true;
 }
 
-static void dashApplyRuntimeState()
+static void dashApplyRuntimeState(bool refreshLed)
 {
     bypassTlsscRequirementRuntime = false;
     emergencyVehicleDetectionRuntime = false;
@@ -796,7 +942,10 @@ static void dashApplyRuntimeState()
     }
 
 #if defined(DASH_RGB_STATUS_LED)
-    appRefreshStatusLed();
+    if (refreshLed)
+        appRefreshStatusLed();
+#else
+    (void)refreshLed;
 #endif
 }
 
@@ -823,10 +972,26 @@ static bool dashSavePrefs()
 
 static bool dashSetCanActive(bool active, const char *reason = nullptr)
 {
-    bool changed = canActive != active;
-    canActive = active;
-    dashApplyRuntimeState();
-    bool saved = dashSavePrefs();
+    AppHandlerGuard appGuard;
+    const bool previous = canActive;
+    const bool changed = previous != active;
+    {
+        PluginLockGuard pluginGuard;
+        DashDataGuard dataGuard;
+        DashRecorderConfigUpdate recorderUpdate(dashRecorder);
+        const uint32_t now = millis();
+        canActive = active;
+        dashApplyRuntimeState(false);
+        dashRecorder.recordSetting(kRecorderSettingInjection, active ? 1u : 0u, now);
+        dashRecorder.recordSetting(kRecorderSettingCan, active ? 1u : 0u, now);
+        dashRecordEffectiveConfigurationAt(now, pluginGetReplayCountLocked());
+    }
+#if defined(DASH_RGB_STATUS_LED)
+    appRefreshStatusLed();
+#endif
+    const bool saved = dashSavePrefs();
+    if (!saved)
+        dashLog("[ERR] Failed to persist dashboard settings");
     if (changed)
     {
         String msg = String("[CFG] Injection ") + (active ? "ON" : "OFF");
@@ -834,8 +999,6 @@ static bool dashSetCanActive(bool active, const char *reason = nullptr)
             msg += String(" via ") + reason;
         dashLog(msg);
     }
-    if (!saved)
-        dashLog("[ERR] Failed to persist dashboard settings");
     return saved;
 }
 
@@ -1075,6 +1238,7 @@ static void dashLoadPrefs()
     hw3SlewRate = dashLoadHw3SlewRate(prefs.getUChar("h3_srt", kHw3SlewRateDefault));
     dashLedBrightness = prefs.getUChar("led_b", kDashLedBrightnessDefault);
     dashApplyRuntimeState();
+    dashRecordEffectiveConfiguration();
     // Load WiFi AP overrides (hotspot name/password)
     String apSsidPref = prefs.isKey("ap_ssid") ? prefs.getString("ap_ssid", "") : "";
     String apPassPref = prefs.isKey("ap_pass") ? prefs.getString("ap_pass", "") : "";
@@ -1226,6 +1390,35 @@ static void dashLoadPrefs()
     dashLog("[BOOT] Prefs loaded HW=" + String(hwMode));
     dashLog("[BOOT] canActive=" + String(canActive ? "YES" : "NO"));
     dashLog("[BOOT] pluginReplay=" + String(pluginGetReplayCount()));
+}
+
+static void dashRecordEffectiveConfigurationAt(uint32_t now, uint8_t replayCount)
+{
+    // Caller holds DashDataGuard; the timestamp is the effective-commit time.
+    const bool effectiveCanActive = canActive;
+    dashRecorder.recordSetting(kRecorderSettingInjection, effectiveCanActive ? 1u : 0u, now);
+    dashRecorder.recordSetting(kRecorderSettingHardware, hwMode, now);
+    dashRecorder.recordSetting(kRecorderSettingCan, effectiveCanActive ? 1u : 0u, now);
+    dashRecorder.recordSetting(kRecorderSettingSpeedAuto, dashSpeedProfileAuto ? 1u : 0u, now);
+    const uint8_t effectiveSpeedProfile = dashHandler
+                                               ? dashClampSpeedProfileForHw(hwMode, (int)dashHandler->speedProfile)
+                                               : dashClampSpeedProfileForHw(hwMode, dashManualSpeedProfile);
+    dashRecorder.recordSetting(kRecorderSettingSpeedProfile, effectiveSpeedProfile, now);
+    dashRecorder.recordSetting(kRecorderSettingApGate, apInjectionGate ? 1u : 0u, now);
+    dashRecorder.recordSetting(kRecorderSettingSummonOnly, summonOnlyInjection ? 1u : 0u, now);
+    dashRecorder.recordSetting(kRecorderSettingNagMode, dashNagMode, now);
+    dashRecorder.recordSetting(kRecorderSettingReplayCount, replayCount, now);
+    dashRecorder.recordSetting(kRecorderSettingOffsetSlew, hw3OffsetSlew ? 1u : 0u, now);
+    dashRecorder.recordSetting(kRecorderSettingOffsetSlewRate, hw3SlewRate, now);
+}
+
+static void dashRecordEffectiveConfiguration()
+{
+    PluginLockGuard pluginGuard;
+    DashDataGuard dataGuard;
+    const uint8_t replayCount = pluginGetReplayCountLocked();
+    const uint32_t now = millis();
+    dashRecordEffectiveConfigurationAt(now, replayCount);
 }
 
 static uint32_t dashPluginStateHash(const char *value)
@@ -1400,6 +1593,788 @@ static void dashSendBuffer(int code, const char *contentType, const char *data, 
 #endif
 }
 
+static void dashSetPersistFailure(uint32_t generation)
+{
+    DashDataGuard guard;
+    if (dashRecorder.generation() == generation)
+    {
+        dashIncidentPersistFailure = true;
+        dashPersistFailureGeneration = generation;
+    }
+}
+
+static void dashSetPersisted(uint32_t generation)
+{
+    DashDataGuard guard;
+    if (dashRecorder.generation() == generation)
+    {
+        dashIncidentPersisted = true;
+        dashPersistedGeneration = generation;
+        dashIncidentPersistFailure = false;
+        dashPersistFailureGeneration = 0;
+    }
+}
+
+static void dashSetIncidentLifecycleError(const char *message, bool pressure = false)
+{
+    DashDataGuard guard;
+    if (pressure)
+        dashIncidentStoragePressure = true;
+    else if (!message || !*message)
+        dashIncidentStoragePressure = false;
+    strlcpy(dashIncidentLastError, message ? message : "", sizeof(dashIncidentLastError));
+}
+
+static bool dashSpiffsInfo(size_t &totalBytes, size_t &usedBytes)
+{
+#ifdef ESP_PLATFORM
+    return esp_spiffs_info(nullptr, &totalBytes, &usedBytes) == ESP_OK;
+#else
+    totalBytes = SPIFFS.totalBytes();
+    usedBytes = SPIFFS.usedBytes();
+    return totalBytes != 0;
+#endif
+}
+
+static void dashRecorderBoardId(char *out, size_t outSize)
+{
+    if (!out || outSize == 0) return;
+#ifdef ESP_PLATFORM
+    uint8_t mac[6] = {};
+    if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK)
+    {
+        snprintf(out, outSize, "t2can-%02x%02x%02x%02x%02x%02x",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        return;
+    }
+#endif
+    strlcpy(out, "t2can-unknown", outSize);
+}
+
+static bool dashIncidentPathFor(uint32_t sequence, uint8_t slot, const char *suffix,
+                                char *out, size_t outSize)
+{
+    if (!sequence || !suffix || !*suffix || !out || outSize == 0) return false;
+    const int written = snprintf(out, outSize, "/incident-%lu-%u.%s",
+                                 static_cast<unsigned long>(sequence),
+                                 static_cast<unsigned>(slot), suffix);
+    return written > 0 && static_cast<size_t>(written) < outSize;
+}
+
+static bool dashPublicationFromNameWithSuffix(const char *name, const char *suffix,
+                                              uint32_t &sequence, uint8_t &slot)
+{
+    if (!name || !suffix || strncmp(name, "/incident-", 10) != 0)
+        return false;
+    char *end = nullptr, *slotEnd = nullptr;
+    const unsigned long value = strtoul(name + 10, &end, 10);
+    if (end == name + 10 || !end || strncmp(end, "-", 1) != 0)
+        return false;
+    if (value > 0xFFFFFFFFUL)
+        return false;
+    const unsigned long slotValue = strtoul(end + 1, &slotEnd, 10);
+    if (slotEnd == end + 1 || !slotEnd || *slotEnd != '.' ||
+        strcmp(slotEnd + 1, suffix) != 0 || slotValue > 255UL)
+        return false;
+    sequence = static_cast<uint32_t>(value);
+    slot = static_cast<uint8_t>(slotValue);
+    return sequence != 0;
+}
+
+static bool dashPublicationFromName(const char *name, uint32_t &sequence, uint8_t &slot)
+{
+    return dashPublicationFromNameWithSuffix(name, "jsonl", sequence, slot);
+}
+
+static bool dashIncidentIdFromText(const String &text, uint32_t &sequence, uint8_t &slot)
+{
+    const char *value = text.c_str();
+    if (!value || !*value) return false;
+    char *end = nullptr, *slotEnd = nullptr;
+    errno = 0;
+    const unsigned long parsedSequence = strtoul(value, &end, 10);
+    if (errno || end == value || !end || *end != '-' || parsedSequence == 0 ||
+        parsedSequence > 0xFFFFFFFFUL)
+        return false;
+    const unsigned long parsedSlot = strtoul(end + 1, &slotEnd, 10);
+    if (slotEnd == end + 1 || !slotEnd || *slotEnd || parsedSlot > 255UL)
+        return false;
+    sequence = static_cast<uint32_t>(parsedSequence);
+    slot = static_cast<uint8_t>(parsedSlot);
+    return true;
+}
+
+static bool dashNormalizeSha256(const String &input, char out[65])
+{
+    if (input.length() != 64) return false;
+    for (size_t i = 0; i < 64; ++i)
+    {
+        char c = input[i];
+        if (c >= 'A' && c <= 'F') c = static_cast<char>(c - 'A' + 'a');
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+        out[i] = c;
+    }
+    out[64] = 0;
+    return true;
+}
+
+static bool dashHashIncident(const char *path, size_t &sizeBytes, char sha256[65])
+{
+    sizeBytes = 0;
+    sha256[0] = 0;
+    File file = SPIFFS.open(path, "r");
+    if (!file) return false;
+#ifdef ESP_PLATFORM
+    if (psa_crypto_init() != PSA_SUCCESS)
+    {
+        file.close();
+        return false;
+    }
+    psa_hash_operation_t operation = PSA_HASH_OPERATION_INIT;
+    if (psa_hash_setup(&operation, PSA_ALG_SHA_256) != PSA_SUCCESS)
+    {
+        file.close();
+        return false;
+    }
+    uint8_t buffer[512];
+    bool ok = true;
+    for (;;)
+    {
+        const size_t count = file.read(buffer, sizeof(buffer));
+        if (count == 0) break;
+        sizeBytes += count;
+        if (psa_hash_update(&operation, buffer, count) != PSA_SUCCESS)
+        {
+            ok = false;
+            break;
+        }
+    }
+    uint8_t digest[32] = {};
+    size_t digestLength = 0;
+    if (file.hasReadError() || !ok ||
+        psa_hash_finish(&operation, digest, sizeof(digest), &digestLength) != PSA_SUCCESS ||
+        digestLength != sizeof(digest))
+    {
+        psa_hash_abort(&operation);
+        file.close();
+        return false;
+    }
+    file.close();
+    static constexpr char kHex[] = "0123456789abcdef";
+    for (size_t i = 0; i < sizeof(digest); ++i)
+    {
+        sha256[i * 2] = kHex[digest[i] >> 4];
+        sha256[i * 2 + 1] = kHex[digest[i] & 0x0F];
+    }
+    sha256[64] = 0;
+    return true;
+#else
+    file.close();
+    return false;
+#endif
+}
+
+static bool dashAckMatches(const char *ackPath, size_t sizeBytes, const char *sha256)
+{
+    File marker = SPIFFS.open(ackPath, "r");
+    if (!marker) return false;
+    const String actual = marker.readString();
+    marker.close();
+    char expected[112] = {};
+    snprintf(expected, sizeof(expected), "size=%lu\nsha256=%s\n",
+             static_cast<unsigned long>(sizeBytes), sha256);
+    return actual == expected;
+}
+
+static bool dashWriteAck(const char *ackPath, size_t sizeBytes, const char *sha256)
+{
+    static constexpr char kAckTempPath[] = "/incident.ack.tmp";
+    SPIFFS.remove(kAckTempPath);
+    File marker = SPIFFS.open(kAckTempPath, "w");
+    if (!marker) return false;
+    char text[112] = {};
+    const int length = snprintf(text, sizeof(text), "size=%lu\nsha256=%s\n",
+                                static_cast<unsigned long>(sizeBytes), sha256);
+    const bool wrote = length > 0 && static_cast<size_t>(length) < sizeof(text) &&
+                       marker.write(reinterpret_cast<const uint8_t *>(text),
+                                    static_cast<size_t>(length)) == static_cast<size_t>(length);
+#ifdef ESP_PLATFORM
+    const bool closed = marker.close();
+#else
+    marker.close();
+    const bool closed = true;
+#endif
+    if (!wrote || !closed)
+    {
+        SPIFFS.remove(kAckTempPath);
+        return false;
+    }
+    if (SPIFFS.exists(ackPath)) SPIFFS.remove(ackPath);
+    if (!SPIFFS.rename(kAckTempPath, ackPath))
+    {
+        SPIFFS.remove(kAckTempPath);
+        return false;
+    }
+    return true;
+}
+
+static void dashRefreshIncidentStats()
+{
+    uint16_t pending = 0, acknowledged = 0;
+    File root = SPIFFS.open("/");
+    if (root)
+    {
+        File entry = root.openNextFile();
+        while (entry)
+        {
+            uint32_t sequence = 0;
+            uint8_t slot = 0;
+            const bool incident = dashPublicationFromName(entry.name(), sequence, slot);
+            char incidentPath[64] = {};
+            if (incident) strlcpy(incidentPath, entry.name(), sizeof(incidentPath));
+            entry.close();
+            if (incident)
+            {
+                char ackPath[64] = {};
+                size_t verifiedSize = 0;
+                char verifiedSha[65] = {};
+                const bool delivered = dashIncidentPathFor(sequence, slot, "ack", ackPath, sizeof(ackPath)) &&
+                                       SPIFFS.exists(ackPath) &&
+                                       dashHashIncident(incidentPath, verifiedSize, verifiedSha) &&
+                                       dashAckMatches(ackPath, verifiedSize, verifiedSha);
+                uint16_t &count = delivered ? acknowledged : pending;
+                if (count != UINT16_MAX) ++count;
+            }
+            entry = root.openNextFile();
+        }
+        root.close();
+    }
+    size_t totalBytes = 0, usedBytes = 0;
+    const bool haveStorage = dashSpiffsInfo(totalBytes, usedBytes);
+    const size_t freeBytes = haveStorage && totalBytes >= usedBytes ? totalBytes - usedBytes : 0;
+    DashDataGuard guard;
+    dashIncidentPendingCount = pending;
+    dashIncidentAcknowledgedCount = acknowledged;
+    dashIncidentStorageTotalBytes = totalBytes;
+    dashIncidentStorageFreeBytes = freeBytes;
+    dashIncidentStoragePressure = haveStorage && freeBytes < kDashIncidentSafetyFreeBytes;
+}
+
+static bool dashFindLatestIncidentPath()
+{
+    File root = SPIFFS.open("/");
+    if (!root)
+        return false;
+    bool found = false;
+    uint32_t bestSequence = 0;
+    uint8_t bestSlot = 0;
+    char bestPath[sizeof(dashIncidentPath)] = {};
+    File entry = root.openNextFile();
+    while (entry)
+    {
+        uint32_t sequence = 0;
+        uint8_t slot = 0;
+        const char *name = entry.name();
+        if (dashPublicationFromName(name, sequence, slot) &&
+            (!found || sequence > bestSequence ||
+             (sequence == bestSequence && slot > bestSlot)))
+        {
+            strlcpy(bestPath, name, sizeof(bestPath));
+            bestSequence = sequence;
+            bestSlot = slot;
+            found = true;
+        }
+        entry.close();
+        entry = root.openNextFile();
+    }
+    root.close();
+    if (!found && SPIFFS.exists("/incident.jsonl"))
+    {
+        strlcpy(dashIncidentPath, "/incident.jsonl", sizeof(dashIncidentPath));
+        return true;
+    }
+    if (!found) return false;
+    strlcpy(dashIncidentPath, bestPath, sizeof(dashIncidentPath));
+    return true;
+}
+
+static bool dashChooseIncidentPath(char *out, size_t outSize)
+{
+    if (!out || outSize == 0)
+        return false;
+    File root = SPIFFS.open("/");
+    if (!root)
+        return false;
+    uint32_t maxKnownSequence = 0;
+    File entry = root.openNextFile();
+    while (entry)
+    {
+        uint32_t sequence = 0;
+        uint8_t slot = 0;
+        if ((dashPublicationFromName(entry.name(), sequence, slot) ||
+             dashPublicationFromNameWithSuffix(entry.name(), "ack", sequence, slot)) &&
+            sequence > maxKnownSequence)
+            maxKnownSequence = sequence;
+        entry.close();
+        entry = root.openNextFile();
+    }
+    root.close();
+
+    uint32_t storedSequence = 0;
+    bool storedValid = false;
+    bool saved = false;
+    {
+        DashPrefsGuard guard;
+        if (!prefs.begin(PREFS_NS, false)) return false;
+        const String stored = prefs.getString("inc_seq", "0");
+        char *end = nullptr;
+        errno = 0;
+        const unsigned long parsed = strtoul(stored.c_str(), &end, 10);
+        storedValid = !errno && end != stored.c_str() && end && !*end && parsed <= 0xFFFFFFFFUL;
+        if (!storedValid)
+        {
+            prefs.end();
+            return false;
+        }
+        if (storedValid) storedSequence = static_cast<uint32_t>(parsed);
+        const uint32_t previous = storedSequence > maxKnownSequence ? storedSequence : maxKnownSequence;
+        if (previous == 0xFFFFFFFFu)
+        {
+            prefs.end();
+            return false;
+        }
+        const uint32_t nextSequence = previous + 1;
+        const bool wrote = prefs.putString("inc_seq", String(static_cast<unsigned long>(nextSequence)));
+        const bool closed = prefs.end();
+        saved = wrote && closed;
+        if (!saved) return false;
+        if (!dashIncidentPathFor(nextSequence, 0, "jsonl", out, outSize)) return false;
+    }
+    if (!saved || SPIFFS.exists(out))
+    {
+        out[0] = 0;
+        return false;
+    }
+    return true;
+}
+
+static void dashMigrateLegacyIncident()
+{
+    if (!SPIFFS.exists("/incident.jsonl")) return;
+    char path[64] = {};
+    if (dashChooseIncidentPath(path, sizeof(path)) && SPIFFS.rename("/incident.jsonl", path))
+        strlcpy(dashIncidentPath, path, sizeof(dashIncidentPath));
+    else
+        dashSetIncidentLifecycleError("legacy_migration_failed");
+}
+
+struct DashIncidentSummary
+{
+    uint32_t sequence = 0;
+    uint8_t slot = 0;
+    size_t sizeBytes = 0;
+    bool acknowledged = false;
+    char path[64] = {};
+};
+
+static bool dashIncidentBefore(uint32_t sequence, uint8_t slot,
+                               const DashIncidentSummary &other)
+{
+    return sequence < other.sequence || (sequence == other.sequence && slot < other.slot);
+}
+
+static bool dashFindOldestAcknowledgedIncident(DashIncidentSummary &out)
+{
+    bool found = false;
+    File root = SPIFFS.open("/");
+    if (!root) return false;
+    File entry = root.openNextFile();
+    while (entry)
+    {
+        uint32_t sequence = 0;
+        uint8_t slot = 0;
+        const bool incident = dashPublicationFromName(entry.name(), sequence, slot);
+        const size_t sizeBytes = incident ? entry.size() : 0;
+        char path[64] = {};
+        if (incident) strlcpy(path, entry.name(), sizeof(path));
+        entry.close();
+        if (incident)
+        {
+            char ackPath[64] = {};
+            size_t verifiedSize = 0;
+            char verifiedSha[65] = {};
+            const bool acknowledged = dashIncidentPathFor(sequence, slot, "ack", ackPath, sizeof(ackPath)) &&
+                                      SPIFFS.exists(ackPath) &&
+                                      dashHashIncident(path, verifiedSize, verifiedSha) &&
+                                      verifiedSize == sizeBytes &&
+                                      dashAckMatches(ackPath, verifiedSize, verifiedSha);
+            if (acknowledged && (!found || dashIncidentBefore(sequence, slot, out)))
+            {
+                out.sequence = sequence;
+                out.slot = slot;
+                out.sizeBytes = sizeBytes;
+                out.acknowledged = true;
+                strlcpy(out.path, path, sizeof(out.path));
+                found = true;
+            }
+        }
+        entry = root.openNextFile();
+    }
+    root.close();
+    return found;
+}
+
+static void dashTrimAckTombstones()
+{
+    size_t tombstones = 0;
+    File root = SPIFFS.open("/");
+    if (!root) return;
+    File entry = root.openNextFile();
+    while (entry)
+    {
+        uint32_t sequence = 0;
+        uint8_t slot = 0;
+        const bool ack = dashPublicationFromNameWithSuffix(entry.name(), "ack", sequence, slot);
+        entry.close();
+        if (ack)
+        {
+            char incidentPath[64] = {};
+            if (dashIncidentPathFor(sequence, slot, "jsonl", incidentPath, sizeof(incidentPath)) &&
+                !SPIFFS.exists(incidentPath))
+                ++tombstones;
+        }
+        entry = root.openNextFile();
+    }
+    root.close();
+
+    while (tombstones > kDashIncidentAckTombstoneLimit)
+    {
+        bool found = false;
+        uint32_t oldestSequence = 0;
+        uint8_t oldestSlot = 0;
+        root = SPIFFS.open("/");
+        if (!root) return;
+        entry = root.openNextFile();
+        while (entry)
+        {
+            uint32_t sequence = 0;
+            uint8_t slot = 0;
+            const bool ack = dashPublicationFromNameWithSuffix(entry.name(), "ack", sequence, slot);
+            entry.close();
+            if (ack)
+            {
+                char incidentPath[64] = {};
+                const bool orphan = dashIncidentPathFor(sequence, slot, "jsonl", incidentPath, sizeof(incidentPath)) &&
+                                    !SPIFFS.exists(incidentPath);
+                if (orphan && (!found || sequence < oldestSequence ||
+                               (sequence == oldestSequence && slot < oldestSlot)))
+                {
+                    oldestSequence = sequence;
+                    oldestSlot = slot;
+                    found = true;
+                }
+            }
+            entry = root.openNextFile();
+        }
+        root.close();
+        if (!found) return;
+        char ackPath[64] = {};
+        if (!dashIncidentPathFor(oldestSequence, oldestSlot, "ack", ackPath, sizeof(ackPath)) ||
+            !SPIFFS.remove(ackPath))
+            return;
+        --tombstones;
+    }
+}
+
+static size_t dashEstimatedIncidentBytes(size_t rawCount, size_t stateCount, size_t configCount)
+{
+    constexpr size_t kBaseBytes = 4096;
+    constexpr size_t kRawLineBytes = 192;
+    constexpr size_t kStateLineBytes = 128;
+    constexpr size_t kConfigLineBytes = 96;
+    if (rawCount > (SIZE_MAX - kBaseBytes) / kRawLineBytes) return SIZE_MAX;
+    size_t total = kBaseBytes + rawCount * kRawLineBytes;
+    if (stateCount > (SIZE_MAX - total) / kStateLineBytes) return SIZE_MAX;
+    total += stateCount * kStateLineBytes;
+    if (configCount > (SIZE_MAX - total) / kConfigLineBytes) return SIZE_MAX;
+    return total + configCount * kConfigLineBytes;
+}
+
+static bool dashEnsureIncidentSpace(size_t requiredFreeBytes)
+{
+    size_t totalBytes = 0, usedBytes = 0;
+    if (!dashSpiffsInfo(totalBytes, usedBytes) || totalBytes < usedBytes ||
+        requiredFreeBytes > totalBytes)
+    {
+        dashRefreshIncidentStats();
+        dashSetIncidentLifecycleError("storage_info_failed", true);
+        return false;
+    }
+    size_t freeBytes = totalBytes - usedBytes;
+    while (freeBytes < requiredFreeBytes)
+    {
+        DashIncidentSummary oldest;
+        if (!dashFindOldestAcknowledgedIncident(oldest))
+        {
+            dashRefreshIncidentStats();
+            dashSetIncidentLifecycleError("storage_full_unacknowledged", true);
+            return false;
+        }
+        if (!SPIFFS.remove(oldest.path))
+        {
+            dashRefreshIncidentStats();
+            dashSetIncidentLifecycleError("acknowledged_eviction_failed", true);
+            return false;
+        }
+        {
+            DashDataGuard guard;
+            ++dashIncidentEvictions;
+        }
+        if (!dashSpiffsInfo(totalBytes, usedBytes) || totalBytes < usedBytes)
+        {
+            dashRefreshIncidentStats();
+            dashSetIncidentLifecycleError("storage_info_failed", true);
+            return false;
+        }
+        freeBytes = totalBytes - usedBytes;
+    }
+    dashTrimAckTombstones();
+    dashSetIncidentLifecycleError("");
+    dashRefreshIncidentStats();
+    return true;
+}
+
+struct DashPersistLease
+{
+    explicit DashPersistLease(uint32_t value) : generation(value) {}
+    ~DashPersistLease() noexcept
+    {
+        if (!completed)
+        {
+            try { SPIFFS.remove("/incident.tmp"); } catch (...) {}
+            try { dashSetPersistFailure(generation); } catch (...) {}
+            try
+            {
+                DashDataGuard guard;
+                dashPersistInProgress = false;
+            }
+            catch (...) {}
+        }
+    }
+    void complete() noexcept
+    {
+        completed = true;
+        try
+        {
+            DashDataGuard guard;
+            dashPersistInProgress = false;
+        }
+        catch (...) {}
+    }
+    uint32_t generation;
+    bool completed = false;
+};
+
+static bool dashWriteIncidentText(File &file, const char *text)
+{
+    if (!text)
+        return false;
+    const size_t length = strlen(text);
+    return file.write(reinterpret_cast<const uint8_t *>(text), length) == length;
+}
+
+// Called only from the HTTP/web maintenance context. CAN callbacks only fill
+// the bounded rings; they never touch SPIFFS.
+static bool dashPersistFrozenIncident()
+{
+    size_t rawLimit = 0, stateLimit = 0, configLimit = 0;
+    size_t rawCapacity = 0, stateCapacity = 0;
+    uint32_t generation = 0, triggerMs = 0, coverageMs = 0, stateCoverageMs = 0;
+    uint32_t rawDrops = 0, stateDrops = 0, stateProtectedDrops = 0;
+    bool stateTargetReady = false;
+    bool usingPsram = false;
+    char triggerReason[16] = {};
+    Chassis::EventRecorder::EffectiveSetting config[32] = {};
+#ifdef ESP_PLATFORM
+    const int resetReason = static_cast<int>(RuntimeDiagnostics::bootResetReason);
+    const bool psramVerified = RuntimeDiagnostics::psramVerified.load(std::memory_order_relaxed);
+    const unsigned long psramBytes = static_cast<unsigned long>(RuntimeDiagnostics::systemInfo.psramBytes);
+#else
+    const int resetReason = 0;
+    const bool psramVerified = false;
+    const unsigned long psramBytes = 0UL;
+#endif
+    {
+        DashDataGuard guard;
+        if (!dashRecorder.frozen()) return false;
+        generation = dashRecorder.generation();
+        if (dashPersistedGeneration == generation || dashPersistInProgress) return false;
+        dashPersistInProgress = true;
+        rawLimit = dashRecorder.rawCount();
+        stateLimit = dashRecorder.stateCount();
+        rawCapacity = dashRecorder.rawCapacity();
+        stateCapacity = dashRecorder.stateCapacity();
+        coverageMs = dashRecorder.coverageMs();
+        stateCoverageMs = dashRecorder.stateHistoryCoverageMs();
+        stateTargetReady = dashRecorder.stateTargetWindowReady();
+        rawDrops = dashRecorder.rawDrops();
+        stateDrops = dashRecorder.stateDrops();
+        stateProtectedDrops = dashRecorder.stateProtectedDrops();
+        usingPsram = dashRecorder.usingPsram();
+        triggerMs = dashRecorder.triggerMs();
+        strncpy(triggerReason, dashRecorder.reason(), sizeof(triggerReason) - 1);
+        configLimit = dashRecorder.effectiveSettingCount();
+        if (configLimit > sizeof(config) / sizeof(config[0]))
+            configLimit = sizeof(config) / sizeof(config[0]);
+        for (size_t i = 0; i < configLimit; ++i)
+            dashRecorder.effectiveSetting(i, config[i]);
+    }
+    DashPersistLease lease(generation);
+
+    const size_t estimatedBytes = dashEstimatedIncidentBytes(rawLimit, stateLimit, configLimit);
+    if (estimatedBytes == SIZE_MAX || estimatedBytes > SIZE_MAX - kDashIncidentSafetyFreeBytes ||
+        !dashEnsureIncidentSpace(estimatedBytes + kDashIncidentSafetyFreeBytes))
+    {
+        dashSetPersistFailure(generation);
+        return false;
+    }
+
+    char finalPath[sizeof(dashIncidentPath)] = {};
+    uint32_t publicationSequence = 0;
+    uint8_t publicationSlot = 0;
+    if (!dashChooseIncidentPath(finalPath, sizeof(finalPath)) ||
+        !dashPublicationFromName(finalPath, publicationSequence, publicationSlot))
+    {
+        dashSetIncidentLifecycleError("incident_sequence_failed");
+        dashSetPersistFailure(generation);
+        return false;
+    }
+    char boardId[32] = {};
+    dashRecorderBoardId(boardId, sizeof(boardId));
+
+    File tmp = SPIFFS.open("/incident.tmp", "w");
+    if (!tmp)
+    {
+        dashSetPersistFailure(generation);
+        return false;
+    }
+    char line[768];
+    snprintf(line, sizeof(line), "{\"schema\":\"t2can-flight-recorder-v1\",\"type\":\"header\",\"boardId\":\"%s\",\"incidentId\":\"%lu-%u\",\"sequence\":%lu,\"firmware\":\"%s\",\"build\":\"%s %s\",\"reset\":%d,\"psramVerified\":%s,\"psramBytes\":%lu,\"storage\":\"SPIFFS\",\"trigger\":\"%s\",\"triggerMs\":%lu,\"generation\":%lu,\"rawCapacity\":%u,\"stateCapacity\":%u,\"coverageMs\":%lu,\"stateCoverageMs\":%lu,\"stateTargetMs\":%lu,\"stateTargetReady\":%s,\"rawDrops\":%lu,\"stateDrops\":%lu,\"stateProtectedDrops\":%lu,\"usingPsram\":%s}\n",
+              boardId, static_cast<unsigned long>(publicationSequence),
+              static_cast<unsigned>(publicationSlot), static_cast<unsigned long>(publicationSequence),
+              FIRMWARE_VERSION, __DATE__, __TIME__, resetReason,
+              psramVerified ? "true" : "false", psramBytes, triggerReason,
+              static_cast<unsigned long>(triggerMs), static_cast<unsigned long>(generation),
+              static_cast<unsigned>(rawCapacity), static_cast<unsigned>(stateCapacity),
+              static_cast<unsigned long>(coverageMs), static_cast<unsigned long>(stateCoverageMs),
+              static_cast<unsigned long>(Chassis::EventRecorder::StateTargetWindowMs),
+              stateTargetReady ? "true" : "false", static_cast<unsigned long>(rawDrops),
+              static_cast<unsigned long>(stateDrops), static_cast<unsigned long>(stateProtectedDrops),
+              usingPsram ? "true" : "false");
+    if (!dashWriteIncidentText(tmp, line))
+    {
+        tmp.close();
+        dashSetPersistFailure(generation);
+        return false;
+    }
+    for (size_t i = 0; i < configLimit; ++i)
+    {
+        snprintf(line, sizeof(line), "{\"type\":\"config\",\"setting\":%u,\"value\":%lu}\n",
+                 static_cast<unsigned>(config[i].setting),
+                 static_cast<unsigned long>(config[i].value));
+        if (!dashWriteIncidentText(tmp, line))
+        {
+            tmp.close();
+            dashSetPersistFailure(generation);
+            return false;
+        }
+    }
+    for (size_t i = 0; i < stateLimit; ++i)
+    {
+        Chassis::EventRecorder::StateRecord state;
+        {
+            DashDataGuard guard;
+            if (!dashRecorder.frozen() || dashRecorder.generation() != generation ||
+                !dashRecorder.stateRecord(i, state))
+            {
+                tmp.close();
+                dashSetPersistFailure(generation);
+                return false;
+            }
+        }
+        snprintf(line, sizeof(line), "{\"type\":\"state\",\"ms\":%lu,\"kind\":%u,\"reason\":%u,\"value\":%u,\"value32\":%lu}\n",
+                 static_cast<unsigned long>(state.ms), static_cast<unsigned>(state.kind),
+                 static_cast<unsigned>(state.reason), static_cast<unsigned>(state.value),
+                 static_cast<unsigned long>(state.value32));
+        if (!dashWriteIncidentText(tmp, line))
+        {
+            tmp.close();
+            dashSetPersistFailure(generation);
+            return false;
+        }
+    }
+    for (size_t i = 0; i < rawLimit; ++i)
+    {
+        Chassis::EventRecorder::RawRecord raw;
+        {
+            DashDataGuard guard;
+            if (!dashRecorder.frozen() || dashRecorder.generation() != generation ||
+                !dashRecorder.rawRecord(i, raw))
+            {
+                tmp.close();
+                dashSetPersistFailure(generation);
+                return false;
+            }
+        }
+        snprintf(line, sizeof(line), "{\"type\":\"raw\",\"ms\":%lu,\"direction\":\"%s\",\"txOk\":%s,\"txAttempted\":%s,\"busMask\":%u,\"physicalBus\":%u,\"id\":%lu,\"dlc\":%u,\"data\":\"",
+                 static_cast<unsigned long>(raw.ms),
+                 raw.direction == Chassis::EventRecorder::Direction::Tx ? "tx" : "rx",
+                 raw.direction == Chassis::EventRecorder::Direction::Tx ? (raw.txOk ? "true" : "false") : "true",
+                 raw.direction == Chassis::EventRecorder::Direction::Tx ? (raw.txAttempted ? "true" : "false") : "true",
+                 static_cast<unsigned>(raw.frame.bus), static_cast<unsigned>(raw.frame.physicalBus),
+                 static_cast<unsigned long>(raw.frame.id),
+                 static_cast<unsigned>(raw.frame.dlc));
+        if (!dashWriteIncidentText(tmp, line))
+        {
+            tmp.close();
+            dashSetPersistFailure(generation);
+            return false;
+        }
+        for (uint8_t j = 0; j < raw.frame.dlc && j < 8; ++j)
+        {
+            snprintf(line, sizeof(line), "%02X", static_cast<unsigned>(raw.frame.data[j]));
+            if (!dashWriteIncidentText(tmp, line))
+            {
+                tmp.close();
+                dashSetPersistFailure(generation);
+                return false;
+            }
+        }
+        if (!dashWriteIncidentText(tmp, "\"}\n"))
+        {
+            tmp.close();
+            dashSetPersistFailure(generation);
+            return false;
+        }
+    }
+#ifdef ESP_PLATFORM
+    const bool closeOk = tmp.close();
+#else
+    tmp.close();
+    const bool closeOk = true;
+#endif
+    if (!closeOk || !SPIFFS.rename("/incident.tmp", finalPath))
+    {
+        dashSetPersistFailure(generation);
+        return false;
+    }
+    strlcpy(dashIncidentPath, finalPath, sizeof(dashIncidentPath));
+    dashSetPersisted(generation);
+    dashRefreshIncidentStats();
+    lease.complete();
+    return true;
+}
+
 static void handleRoot()
 {
     server.sendHeader("Content-Encoding", "gzip");
@@ -1417,30 +2392,85 @@ static void handleRoot()
 static void handleDiagnosticDetails()
 {
     Chassis::TelemetrySnapshot t;
-    bool enabled, frozen; size_t count; uint32_t triggerMs; const char *reason;
-    const uint32_t now = millis();
+    bool enabled = false, frozen = false, usingPsram = false, persisted = false;
+    size_t count = 0, rawCount = 0, stateCount = 0, rawCapacity = 0, stateCapacity = 0;
+    uint32_t triggerMs = 0, coverageMs = 0, stateCoverageMs = 0, drops = 0;
+    uint32_t rawDrops = 0, stateDrops = 0, stateProtectedDrops = 0, generation = 0;
+    uint32_t incidentEvictions = 0;
+    uint16_t pendingIncidents = 0, acknowledgedIncidents = 0;
+    size_t incidentStorageTotal = 0, incidentStorageFree = 0;
+    bool stateTargetReady = false, incidentStoragePressure = false;
+    char incidentLastError[sizeof(dashIncidentLastError)] = {};
+    char reason[16] = {};
+#ifdef ESP_PLATFORM
+    bool psramVerified = false;
+    unsigned long psramBytes = 0, psramProbeBytes = 0;
+#endif
     {
         DashDataGuard guard;
+        const uint32_t now = millis();
         t = dashTelemetry.snapshot(now);
         dashRecorder.tick(now);
         enabled = dashRecorder.enabled(); frozen = dashRecorder.frozen();
         count = dashRecorder.count(); triggerMs = dashRecorder.triggerMs();
-        reason = dashRecorder.reason();
+        rawCount = dashRecorder.rawCount(); stateCount = dashRecorder.stateCount();
+        rawCapacity = dashRecorder.rawCapacity(); stateCapacity = dashRecorder.stateCapacity();
+        coverageMs = dashRecorder.coverageMs(); stateCoverageMs = dashRecorder.stateHistoryCoverageMs();
+        stateTargetReady = dashRecorder.stateTargetWindowReady(); rawDrops = dashRecorder.rawDrops();
+        stateDrops = dashRecorder.stateDrops(); stateProtectedDrops = dashRecorder.stateProtectedDrops();
+        drops = dashRecorder.drops();
+        usingPsram = dashRecorder.usingPsram(); generation = dashRecorder.generation();
+        persisted = dashIncidentPersisted && dashPersistedGeneration == generation;
+        pendingIncidents = dashIncidentPendingCount;
+        acknowledgedIncidents = dashIncidentAcknowledgedCount;
+        incidentStorageTotal = dashIncidentStorageTotalBytes;
+        incidentStorageFree = dashIncidentStorageFreeBytes;
+        incidentStoragePressure = dashIncidentStoragePressure;
+        incidentEvictions = dashIncidentEvictions;
+        strlcpy(incidentLastError, dashIncidentLastError, sizeof(incidentLastError));
+        strncpy(reason, dashRecorder.reason(), sizeof(reason) - 1);
+#ifdef ESP_PLATFORM
+        psramVerified = RuntimeDiagnostics::psramVerified.load(std::memory_order_relaxed);
+        psramBytes = static_cast<unsigned long>(RuntimeDiagnostics::systemInfo.psramBytes);
+        psramProbeBytes = static_cast<unsigned long>(RuntimeDiagnostics::psramProbeBytes.load(std::memory_order_relaxed));
+#endif
     }
-    char response[1200];
+    char response[2300];
     BoundedTextWriter json(response, sizeof(response));
     json.appendf("{\"bms\":{\"hvSeen\":%s,\"voltage\":%.2f,\"current\":%.1f,"
         "\"socSeen\":%s,\"soc\":%.1f,\"thermalSeen\":%s,\"minC\":%d,\"maxC\":%d},"
         "\"das\":{\"seen\":%s,\"laneChange\":%u,\"sideWarning\":%u,\"forwardWarning\":%u,"
         "\"limitSeen\":%s,\"limitKph\":%u},"
-        "\"event\":{\"enabled\":%s,\"frozen\":%s,\"count\":%u,\"reason\":\"%s\",\"triggerMs\":%lu}}",
+        "\"event\":{\"enabled\":%s,\"frozen\":%s,\"count\":%u,\"rawCount\":%u,\"stateCount\":%u,"
+        "\"rawCapacity\":%u,\"stateCapacity\":%u,\"coverageMs\":%lu,\"stateCoverageMs\":%lu,"
+        "\"stateTargetMs\":%lu,\"stateTargetReady\":%s,\"drops\":%lu,\"rawDrops\":%lu,"
+        "\"stateDrops\":%lu,\"stateProtectedDrops\":%lu,\"usingPsram\":%s,"
+        "\"generation\":%lu,\"persisted\":%s,\"reason\":\"%s\",\"triggerMs\":%lu},"
+        "\"incidentStore\":{\"pending\":%u,\"acknowledged\":%u,\"totalBytes\":%lu,\"freeBytes\":%lu,"
+        "\"pressure\":%s,\"evictions\":%lu,\"lastError\":\"%s\"},"
+        "\"psram\":{\"verified\":%s,\"totalBytes\":%lu,\"probeBytes\":%lu}}",
         t.bmsHvSeen ? "true" : "false", t.packVoltageV, t.packCurrentA,
         t.bmsSocSeen ? "true" : "false", t.socPercent,
         t.bmsThermalSeen ? "true" : "false", int(t.tempMinC), int(t.tempMaxC),
         t.dasSeen ? "true" : "false", unsigned(t.laneChange), unsigned(t.sideWarning), unsigned(t.forwardWarning),
         t.visionLimitSeen ? "true" : "false", unsigned(t.visionLimitKph),
-        enabled ? "true" : "false", frozen ? "true" : "false", unsigned(count), reason,
-        static_cast<unsigned long>(triggerMs));
+        enabled ? "true" : "false", frozen ? "true" : "false", unsigned(count), unsigned(rawCount),
+        unsigned(stateCount), unsigned(rawCapacity), unsigned(stateCapacity),
+        static_cast<unsigned long>(coverageMs), static_cast<unsigned long>(stateCoverageMs),
+        static_cast<unsigned long>(Chassis::EventRecorder::StateTargetWindowMs), stateTargetReady ? "true" : "false",
+        static_cast<unsigned long>(drops), static_cast<unsigned long>(rawDrops),
+        static_cast<unsigned long>(stateDrops), static_cast<unsigned long>(stateProtectedDrops),
+        usingPsram ? "true" : "false", static_cast<unsigned long>(generation), persisted ? "true" : "false", reason,
+        static_cast<unsigned long>(triggerMs),
+        static_cast<unsigned>(pendingIncidents), static_cast<unsigned>(acknowledgedIncidents),
+        static_cast<unsigned long>(incidentStorageTotal), static_cast<unsigned long>(incidentStorageFree),
+        incidentStoragePressure ? "true" : "false", static_cast<unsigned long>(incidentEvictions), incidentLastError,
+#ifdef ESP_PLATFORM
+        psramVerified ? "true" : "false", psramBytes, psramProbeBytes
+#else
+        "false", 0UL, 0UL
+#endif
+    );
     server.sendHeader("Cache-Control", "no-store");
     server.send(200, "application/json", response);
 }
@@ -1449,41 +2479,344 @@ static void handleEventControl()
 {
     const String action = server.arg("action");
     bool ok = true;
+    bool busy = false;
+    bool recordEffective = false;
     {
         DashDataGuard guard;
-        if (action == "enable") dashRecorder.enable(true);
+        const bool mutatesGeneration = action == "enable" || action == "disable" || action == "clear";
+        busy = mutatesGeneration && dashPersistInProgress;
+        if (busy)
+            ok = false;
+        else if (action == "enable") { dashRecorder.enable(true); recordEffective = true; }
         else if (action == "disable") dashRecorder.enable(false);
-        else if (action == "clear") dashRecorder.clear();
+        else if (action == "clear") { dashRecorder.clear(); recordEffective = true; }
         else if (action == "mark") ok = dashRecorder.mark(Chassis::EventRecorder::Trigger::Manual, millis());
         else ok = false;
+    }
+    if (recordEffective)
+        dashRecordEffectiveConfiguration();
+    if (busy)
+    {
+        server.send(409, "application/json", "{\"ok\":false,\"error\":\"Incident persistence in progress\"}");
+        return;
     }
     server.send(ok ? 200 : 400, "application/json", ok ? "{\"ok\":true}" : "{\"error\":\"Invalid action or recorder not armed\"}");
 }
 
+static bool dashRequireRecorderAuth()
+{
+    if (server.authenticate(DASH_OTA_USER, DASH_OTA_PASS)) return true;
+    server.requestAuthentication();
+    return false;
+}
+
+static size_t dashCollectIncidentPage(uint32_t afterSequence, DashIncidentSummary *out,
+                                      size_t limit, size_t &eligibleCount)
+{
+    eligibleCount = 0;
+    size_t selected = 0;
+    File root = SPIFFS.open("/");
+    if (!root) return 0;
+    File entry = root.openNextFile();
+    while (entry)
+    {
+        uint32_t sequence = 0;
+        uint8_t slot = 0;
+        const bool incident = dashPublicationFromName(entry.name(), sequence, slot);
+        const size_t sizeBytes = incident ? entry.size() : 0;
+        char path[64] = {};
+        if (incident) strlcpy(path, entry.name(), sizeof(path));
+        entry.close();
+        if (incident && sequence > afterSequence)
+        {
+            ++eligibleCount;
+            size_t insertAt = 0;
+            while (insertAt < selected && !dashIncidentBefore(sequence, slot, out[insertAt]))
+                ++insertAt;
+            if (selected < limit)
+            {
+                for (size_t i = selected; i > insertAt; --i) out[i] = out[i - 1];
+                ++selected;
+            }
+            else if (insertAt < limit)
+            {
+                for (size_t i = limit - 1; i > insertAt; --i) out[i] = out[i - 1];
+            }
+            else
+            {
+                entry = root.openNextFile();
+                continue;
+            }
+            DashIncidentSummary &summary = out[insertAt];
+            summary.sequence = sequence;
+            summary.slot = slot;
+            summary.sizeBytes = sizeBytes;
+            strlcpy(summary.path, path, sizeof(summary.path));
+            char ackPath[64] = {};
+            summary.acknowledged = dashIncidentPathFor(sequence, slot, "ack", ackPath, sizeof(ackPath)) &&
+                                   SPIFFS.exists(ackPath);
+        }
+        entry = root.openNextFile();
+    }
+    root.close();
+    return selected;
+}
+
+static void handleEventList()
+{
+    if (!dashRequireRecorderAuth()) return;
+    uint32_t afterSequence = 0;
+    if (server.hasArg("after"))
+    {
+        char *end = nullptr;
+        errno = 0;
+        const String value = server.arg("after");
+        const unsigned long parsed = strtoul(value.c_str(), &end, 10);
+        if (errno || end == value.c_str() || !end || *end || parsed > 0xFFFFFFFFUL)
+        {
+            server.send(400, "application/json", "{\"error\":\"Invalid after sequence\"}");
+            return;
+        }
+        afterSequence = static_cast<uint32_t>(parsed);
+    }
+
+    DashIncidentSummary incidents[kDashIncidentListLimit] = {};
+    size_t eligibleCount = 0;
+    const size_t count = dashCollectIncidentPage(afterSequence, incidents,
+                                                 kDashIncidentListLimit, eligibleCount);
+    dashRefreshIncidentStats();
+
+    char boardId[32] = {};
+    dashRecorderBoardId(boardId, sizeof(boardId));
+    uint16_t pending = 0, acknowledged = 0;
+    uint32_t evictions = 0;
+    size_t totalBytes = 0, freeBytes = 0;
+    bool pressure = false;
+    char lastError[sizeof(dashIncidentLastError)] = {};
+    {
+        DashDataGuard guard;
+        pending = dashIncidentPendingCount;
+        acknowledged = dashIncidentAcknowledgedCount;
+        evictions = dashIncidentEvictions;
+        totalBytes = dashIncidentStorageTotalBytes;
+        freeBytes = dashIncidentStorageFreeBytes;
+        pressure = dashIncidentStoragePressure;
+        strlcpy(lastError, dashIncidentLastError, sizeof(lastError));
+    }
+
+    String response;
+    response.reserve(6144);
+    response += "{\"schema\":\"t2can-incident-list-v1\",\"boardId\":\"";
+    response += boardId;
+    response += "\",\"pending\":";
+    response += String(static_cast<unsigned>(pending));
+    response += ",\"acknowledged\":";
+    response += String(static_cast<unsigned>(acknowledged));
+    response += ",\"storageTotalBytes\":";
+    response += String(static_cast<unsigned long>(totalBytes));
+    response += ",\"storageFreeBytes\":";
+    response += String(static_cast<unsigned long>(freeBytes));
+    response += ",\"storagePressure\":";
+    response += pressure ? "true" : "false";
+    response += ",\"evictions\":";
+    response += String(static_cast<unsigned long>(evictions));
+    response += ",\"lastError\":\"";
+    response += lastError;
+    response += "\",\"truncated\":";
+    response += eligibleCount > count ? "true" : "false";
+    response += ",\"incidents\":[";
+    for (size_t i = 0; i < count; ++i)
+    {
+        size_t sizeBytes = 0;
+        char sha256[65] = {};
+        const bool hashed = dashHashIncident(incidents[i].path, sizeBytes, sha256);
+        char ackPath[64] = {};
+        incidents[i].acknowledged = hashed &&
+            dashIncidentPathFor(incidents[i].sequence, incidents[i].slot, "ack",
+                                ackPath, sizeof(ackPath)) &&
+            SPIFFS.exists(ackPath) && dashAckMatches(ackPath, sizeBytes, sha256);
+        if (i) response += ',';
+        response += "{\"id\":\"";
+        response += String(static_cast<unsigned long>(incidents[i].sequence));
+        response += '-';
+        response += String(static_cast<unsigned>(incidents[i].slot));
+        response += "\",\"sequence\":";
+        response += String(static_cast<unsigned long>(incidents[i].sequence));
+        response += ",\"slot\":";
+        response += String(static_cast<unsigned>(incidents[i].slot));
+        response += ",\"size\":";
+        response += String(static_cast<unsigned long>(hashed ? sizeBytes : incidents[i].sizeBytes));
+        response += ",\"sha256\":";
+        if (hashed)
+        {
+            response += '"';
+            response += sha256;
+            response += '"';
+        }
+        else
+            response += "null";
+        response += ",\"acknowledged\":";
+        response += incidents[i].acknowledged ? "true" : "false";
+        response += '}';
+    }
+    response += "]}";
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "application/json", response);
+}
+
+static void handleEventAck()
+{
+    if (!dashRequireRecorderAuth()) return;
+    if (!server.hasArg("id") || !server.hasArg("size") || !server.hasArg("sha256"))
+    {
+        server.send(400, "application/json", "{\"error\":\"id, size and sha256 are required\"}");
+        return;
+    }
+    uint32_t sequence = 0;
+    uint8_t slot = 0;
+    if (!dashIncidentIdFromText(server.arg("id"), sequence, slot))
+    {
+        server.send(400, "application/json", "{\"error\":\"Invalid incident id\"}");
+        return;
+    }
+    const String sizeText = server.arg("size");
+    char *sizeEnd = nullptr;
+    errno = 0;
+    const unsigned long submittedSize = strtoul(sizeText.c_str(), &sizeEnd, 10);
+    char submittedSha[65] = {};
+    if (errno || sizeEnd == sizeText.c_str() || !sizeEnd || *sizeEnd ||
+        !dashNormalizeSha256(server.arg("sha256"), submittedSha))
+    {
+        server.send(400, "application/json", "{\"error\":\"Invalid size or sha256\"}");
+        return;
+    }
+    char incidentPath[64] = {}, ackPath[64] = {};
+    if (!dashIncidentPathFor(sequence, slot, "jsonl", incidentPath, sizeof(incidentPath)) ||
+        !dashIncidentPathFor(sequence, slot, "ack", ackPath, sizeof(ackPath)))
+    {
+        server.send(400, "application/json", "{\"error\":\"Invalid incident id\"}");
+        return;
+    }
+    if (!SPIFFS.exists(incidentPath))
+    {
+        if (SPIFFS.exists(ackPath) && dashAckMatches(ackPath, submittedSize, submittedSha))
+        {
+            server.send(200, "application/json", "{\"ok\":true,\"alreadyAcknowledged\":true}");
+            return;
+        }
+        server.send(404, "application/json", "{\"error\":\"Incident not found\"}");
+        return;
+    }
+    size_t actualSize = 0;
+    char actualSha[65] = {};
+    if (!dashHashIncident(incidentPath, actualSize, actualSha))
+    {
+        dashSetIncidentLifecycleError("incident_hash_failed");
+        server.send(500, "application/json", "{\"error\":\"Incident verification failed\"}");
+        return;
+    }
+    if (actualSize != submittedSize || strcmp(actualSha, submittedSha) != 0)
+    {
+        server.send(409, "application/json", "{\"error\":\"ACK does not match incident\"}");
+        return;
+    }
+    const bool alreadyAcknowledged = SPIFFS.exists(ackPath) &&
+                                     dashAckMatches(ackPath, actualSize, actualSha);
+    if (!alreadyAcknowledged && !dashWriteAck(ackPath, actualSize, actualSha))
+    {
+        dashSetIncidentLifecycleError("ack_persist_failed");
+        server.send(500, "application/json", "{\"error\":\"ACK persistence failed\"}");
+        return;
+    }
+    dashSetIncidentLifecycleError("");
+    dashRefreshIncidentStats();
+    (void)dashEnsureIncidentSpace(kDashIncidentSafetyFreeBytes);
+    server.send(200, "application/json",
+                alreadyAcknowledged ? "{\"ok\":true,\"alreadyAcknowledged\":true}"
+                                    : "{\"ok\":true,\"alreadyAcknowledged\":false}");
+}
+
 static void handleEventDownload()
 {
-    // Copy once so another client clearing/rearming cannot mix two incidents.
-    auto capture = std::unique_ptr<Chassis::EventRecorder>(new (std::nothrow) Chassis::EventRecorder);
-    if (!capture) { server.send(503, "text/plain", "Not enough memory"); return; }
-    { DashDataGuard guard; *capture = dashRecorder; }
-    if (!capture->frozen()) { server.send(409, "text/plain", "Capture is not ready"); return; }
-    String body;
-    body.reserve(capture->count() * 64 + 1);
-    for (size_t i = 0; i < capture->count(); ++i) {
-        Chassis::EventRecorder::Entry e;
-        if (!capture->entry(i, e)) break;
-        char line[96];
-        const char *bus = (e.frame.bus & (CAN_BUS_CAN_A | CAN_BUS_PARTY)) ? "can0" : "can1";
-        int n = snprintf(line, sizeof(line), "(%lu.%03lu) %s %03lX#",
-            static_cast<unsigned long>(e.ms / 1000), static_cast<unsigned long>(e.ms % 1000),
-            bus, static_cast<unsigned long>(e.frame.id));
-        for (uint8_t j = 0; j < e.frame.dlc; ++j)
-            n += snprintf(line + n, sizeof(line) - n, "%02X", e.frame.data[j]);
-        body += line; body += "\n";
+    if (!dashRequireRecorderAuth()) return;
+    char selectedPath[sizeof(dashIncidentPath)] = {};
+    uint32_t selectedSequence = 0;
+    uint8_t selectedSlot = 0;
+    if (server.hasArg("id"))
+    {
+        if (!dashIncidentIdFromText(server.arg("id"), selectedSequence, selectedSlot) ||
+            !dashIncidentPathFor(selectedSequence, selectedSlot, "jsonl",
+                                 selectedPath, sizeof(selectedPath)))
+        {
+            server.send(400, "application/json", "{\"error\":\"Invalid incident id\"}");
+            return;
+        }
     }
-    server.sendHeader("Cache-Control", "no-store");
-    server.sendHeader("Content-Disposition", "attachment; filename=can-event.log");
-    server.send(200, "text/plain", body);
+    else
+    {
+        bool currentIncident = false;
+        bool currentPersisted = false;
+        {
+            DashDataGuard guard;
+            currentIncident = dashRecorder.trigger() != Chassis::EventRecorder::Trigger::None;
+            currentPersisted = dashIncidentPersisted && dashPersistedGeneration == dashRecorder.generation();
+        }
+        if (currentIncident && !currentPersisted) dashPersistFrozenIncident();
+        {
+            DashDataGuard guard;
+            currentIncident = dashRecorder.trigger() != Chassis::EventRecorder::Trigger::None;
+            currentPersisted = dashIncidentPersisted && dashPersistedGeneration == dashRecorder.generation();
+        }
+        if (currentIncident && !currentPersisted)
+        {
+            server.send(503, "text/plain", "Incident persistence is not ready");
+            return;
+        }
+        if (!dashFindLatestIncidentPath())
+        {
+            server.send(409, "text/plain", "Capture is not ready");
+            return;
+        }
+        strlcpy(selectedPath, dashIncidentPath, sizeof(selectedPath));
+        (void)dashPublicationFromName(selectedPath, selectedSequence, selectedSlot);
+    }
+    if (SPIFFS.exists(selectedPath))
+    {
+        size_t expectedBytes = 0;
+        char sha256[65] = {};
+        if (!dashHashIncident(selectedPath, expectedBytes, sha256))
+        {
+            dashSetIncidentLifecycleError("incident_hash_failed");
+            server.send(500, "text/plain", "Incident verification failed");
+            return;
+        }
+        File saved = SPIFFS.open(selectedPath, "r");
+        if (saved)
+        {
+            server.sendHeader("Cache-Control", "no-store");
+            const char *filename = selectedPath[0] == '/' ? selectedPath + 1 : selectedPath;
+            const String disposition = String("attachment; filename=") + filename;
+            const String incidentId = String(static_cast<unsigned long>(selectedSequence)) + "-" +
+                                      String(static_cast<unsigned>(selectedSlot));
+            server.sendHeader("Content-Disposition", disposition.c_str());
+            server.sendHeader("X-T2CAN-Incident-Id", incidentId.c_str());
+            server.sendHeader("X-T2CAN-Size", String(static_cast<unsigned long>(expectedBytes)).c_str());
+            server.sendHeader("X-T2CAN-SHA256", sha256);
+            server.sendHeader("ETag", sha256);
+            size_t sentBytes = 0;
+            const bool streamOk = server.streamFile(saved, "application/x-ndjson", sentBytes);
+            saved.close();
+            if (!streamOk || sentBytes != expectedBytes)
+            {
+                dashLog(String("[ERR] Incident download failed: sent ") +
+                        String((unsigned long)sentBytes) + " of " +
+                        String((unsigned long)expectedBytes) + " bytes");
+            }
+            return;
+        }
+        dashLog("[ERR] Incident file exists but could not be opened for download");
+    }
+    server.send(404, "text/plain", "Incident not found");
 }
 
 static void dashEventTick()
@@ -1499,7 +2832,8 @@ static void dashEventTick()
     if (dashDriver) {
         dashDriver->diagnosticsJson(diagnostics, sizeof(diagnostics));
         JsonDocument doc;
-        if (!deserializeJson(doc, diagnostics)) {
+        if (!deserializeJson(doc, diagnostics))
+        {
             valid = true;
             if (!doc["canA"].isNull()) {
                 readyMask = (doc["canA"]["ready"].as<bool>() ? 1 : 0) |
@@ -1510,30 +2844,106 @@ static void dashEventTick()
             errors = (doc["canA"]["errors"] | 0u) + (doc["canB"]["errors"] | 0u) +
                      (doc["busErrors"] | 0u) + (doc["rxErrors"] | 0u) + (doc["txErrors"] | 0u);
         }
+
+        // Prefer the driver's physical health interface. This covers
+        // MCP2515/TWAI counters even when their diagnostic JSON schemas differ.
+        bool readyA = false, readyB = false, readyAny = false;
+        uint32_t errorsA = 0, errorsB = 0, errorsAny = 0;
+        const bool hasA = dashDriver->physicalHealth(CAN_BUS_CAN_A, readyA, errorsA);
+        const bool hasB = dashDriver->physicalHealth(CAN_BUS_CAN_B, readyB, errorsB);
+        if (hasA || hasB)
+        {
+            readyMask = (hasA && readyA ? 1 : 0) | (hasB && readyB ? 2 : 0);
+            errors = (hasA ? errorsA : 0) + (hasB ? errorsB : 0);
+            valid = true;
+        }
+        else if (dashDriver->physicalHealth(CAN_BUS_ANY, readyAny, errorsAny))
+        {
+            readyMask = readyAny ? 1 : 0;
+            errors = errorsAny;
+            valid = true;
+        }
     }
-    DashDataGuard guard;
-    if (valid) {
-        if (errors > previousErrors || (previousReadyMask & ~readyMask) != 0)
-            dashRecorder.mark(Chassis::EventRecorder::Trigger::CanError, millis());
-        previousErrors = errors;
-        previousReadyMask = readyMask;
+    bool shouldPersist = false;
+    {
+        // CAN processing holds AppHandlerGuard before invoking dashboard
+        // observers. Take it first here as well, then DashDataGuard, so a
+        // handler's automatic profile transition cannot race recorder freeze.
+        AppHandlerGuard appGuard;
+        DashDataGuard guard;
+        const uint32_t now = millis();
+        if (valid) {
+            if (errors > previousErrors || (previousReadyMask & ~readyMask) != 0)
+                dashRecorder.mark(Chassis::EventRecorder::Trigger::CanError, now);
+            previousErrors = errors;
+            previousReadyMask = readyMask;
+        }
+        if (dashCanSeen && Chassis::EventRecorder::postDeadlineReached(now, lastFrameMs) &&
+            dashRecorder.enabled() && dashRecorder.trigger() == Chassis::EventRecorder::Trigger::None &&
+            dashCanLossGeneration != dashRecorder.generation())
+        {
+            if (dashRecorder.mark(Chassis::EventRecorder::Trigger::CanLoss, now))
+                dashCanLossGeneration = dashRecorder.generation();
+        }
+        dashRecorder.recordCanLiveness(
+            dashCanSeen && !Chassis::EventRecorder::postDeadlineReached(now, lastFrameMs), now);
+        dashRecorder.tick(now);
+        shouldPersist = dashRecorder.frozen() &&
+                        !(dashIncidentPersisted && dashPersistedGeneration == dashRecorder.generation());
     }
-    dashRecorder.tick(millis());
+    mcpDashRecordCanHealth();
+    if (shouldPersist)
+        dashPersistFrozenIncident();
 }
 
 static void handleStatus()
 {
-    const unsigned long now = millis();
+    unsigned long now = 0;
     bool canOnlineSnapshot = false;
     DashWriteProbe writeProbeSnapshot = {};
     Chassis::TelemetrySnapshot telemetrySnapshot = {};
+    bool recorderArmed = false, recorderFrozen = false, recorderUsingPsram = false;
+    size_t recorderRawCount = 0, recorderStateCount = 0, recorderRawCapacity = 0, recorderStateCapacity = 0;
+    uint32_t recorderCoverage = 0, recorderStateCoverage = 0, recorderDrops = 0;
+    uint32_t recorderRawDrops = 0, recorderStateDrops = 0, recorderStateProtectedDrops = 0, recorderGeneration = 0;
+    uint32_t incidentEvictions = 0;
+    uint16_t pendingIncidents = 0, acknowledgedIncidents = 0;
+    size_t incidentStorageTotal = 0, incidentStorageFree = 0;
+    bool recorderPersisted = false, recorderPersistFailure = false, recorderStateTargetReady = false;
+    bool incidentStoragePressure = false;
+    char incidentLastError[sizeof(dashIncidentLastError)] = {};
     {
         DashDataGuard guard;
-        if (canOnline && now - lastFrameMs > 10000)
+        now = millis();
+        if (canOnline && Chassis::EventRecorder::postDeadlineReached(now, lastFrameMs))
             canOnline = false;
         canOnlineSnapshot = canOnline;
         writeProbeSnapshot = dashWriteProbe;
         telemetrySnapshot = dashTelemetry.snapshot(now);
+        recorderArmed = dashRecorder.enabled();
+        recorderFrozen = dashRecorder.frozen();
+        recorderRawCount = dashRecorder.rawCount();
+        recorderStateCount = dashRecorder.stateCount();
+        recorderRawCapacity = dashRecorder.rawCapacity();
+        recorderStateCapacity = dashRecorder.stateCapacity();
+        recorderCoverage = dashRecorder.coverageMs();
+        recorderStateCoverage = dashRecorder.stateHistoryCoverageMs();
+        recorderStateTargetReady = dashRecorder.stateTargetWindowReady();
+        recorderDrops = dashRecorder.drops();
+        recorderRawDrops = dashRecorder.rawDrops();
+        recorderStateDrops = dashRecorder.stateDrops();
+        recorderStateProtectedDrops = dashRecorder.stateProtectedDrops();
+        recorderUsingPsram = dashRecorder.usingPsram();
+        recorderGeneration = dashRecorder.generation();
+        recorderPersisted = dashIncidentPersisted && dashPersistedGeneration == recorderGeneration;
+        recorderPersistFailure = dashIncidentPersistFailure && dashPersistFailureGeneration == recorderGeneration;
+        pendingIncidents = dashIncidentPendingCount;
+        acknowledgedIncidents = dashIncidentAcknowledgedCount;
+        incidentStorageTotal = dashIncidentStorageTotalBytes;
+        incidentStorageFree = dashIncidentStorageFreeBytes;
+        incidentStoragePressure = dashIncidentStoragePressure;
+        incidentEvictions = dashIncidentEvictions;
+        strlcpy(incidentLastError, dashIncidentLastError, sizeof(incidentLastError));
     }
 
     char driverJson[768] = "{\"type\":\"unavailable\",\"stateCode\":0}";
@@ -1542,7 +2952,7 @@ static void handleStatus()
 
     const bool injectionActive = dashInjectionActive();
     const DashApGateSnapshot apGate = dashApGateSnapshot();
-    char response[3584];
+    char response[4096];
     BoundedTextWriter json(response, sizeof(response));
     json.appendf("{\"can\":%s,\"ia\":%s,\"ready\":%s",
                  canOnlineSnapshot ? "true" : "false",
@@ -1615,11 +3025,33 @@ static void handleStatus()
         telemetrySnapshot.tierSeen ? "true" : "false",
         static_cast<unsigned int>(telemetrySnapshot.tier),
         telemetrySnapshot.tierSeen ? now - telemetrySnapshot.tierMs : 0UL);
-    json.appendf(
-        ",\"driver\":%s,\"probe\":{\"active\":%s,\"state\":%u,\"id\":%lu,"
-                 "\"mux\":%d,\"txa\":%lu,\"rxa\":%lu,\"txdlc\":%u,\"rxdlc\":%u,"
-                 "\"hasrx\":%s,\"tx\":[",
-                 driverJson, writeProbeSnapshot.active ? "true" : "false",
+    json.appendf(",\"recorder\":{\"armed\":%s,\"frozen\":%s,\"rawCount\":%u,\"stateCount\":%u,\"rawCapacity\":%u,\"stateCapacity\":%u,\"coverageMs\":%lu,\"stateCoverageMs\":%lu,\"stateTargetMs\":%lu,\"stateTargetReady\":%s,\"drops\":%lu,\"rawDrops\":%lu,\"stateDrops\":%lu,\"stateProtectedDrops\":%lu,\"usingPsram\":%s,\"generation\":%lu,\"persisted\":%s,\"persistFailure\":%s},\"incidentStore\":{\"pending\":%u,\"acknowledged\":%u,\"totalBytes\":%lu,\"freeBytes\":%lu,\"pressure\":%s,\"evictions\":%lu,\"lastError\":\"%s\"},\"psram\":{\"verified\":%s,\"bytes\":%lu,\"probeBytes\":%lu}",
+                       recorderArmed ? "true" : "false", recorderFrozen ? "true" : "false",
+                       static_cast<unsigned>(recorderRawCount), static_cast<unsigned>(recorderStateCount),
+                       static_cast<unsigned>(recorderRawCapacity), static_cast<unsigned>(recorderStateCapacity),
+                       static_cast<unsigned long>(recorderCoverage), static_cast<unsigned long>(recorderStateCoverage),
+                       static_cast<unsigned long>(Chassis::EventRecorder::StateTargetWindowMs),
+                       recorderStateTargetReady ? "true" : "false", static_cast<unsigned long>(recorderDrops),
+                       static_cast<unsigned long>(recorderRawDrops), static_cast<unsigned long>(recorderStateDrops),
+                       static_cast<unsigned long>(recorderStateProtectedDrops),
+                       recorderUsingPsram ? "true" : "false", static_cast<unsigned long>(recorderGeneration),
+                       recorderPersisted ? "true" : "false", recorderPersistFailure ? "true" : "false",
+                       static_cast<unsigned>(pendingIncidents), static_cast<unsigned>(acknowledgedIncidents),
+                       static_cast<unsigned long>(incidentStorageTotal), static_cast<unsigned long>(incidentStorageFree),
+                       incidentStoragePressure ? "true" : "false", static_cast<unsigned long>(incidentEvictions),
+                       incidentLastError,
+        #ifdef ESP_PLATFORM
+                       RuntimeDiagnostics::psramVerified.load(std::memory_order_relaxed) ? "true" : "false",
+                       static_cast<unsigned long>(RuntimeDiagnostics::systemInfo.psramBytes),
+                       static_cast<unsigned long>(RuntimeDiagnostics::psramProbeBytes.load(std::memory_order_relaxed))
+        #else
+                       "false", 0UL, 0UL
+        #endif
+        );
+        json.appendf(",\"driver\":%s,\"probe\":{\"active\":%s,\"state\":%u,\"id\":%lu,"
+                     "\"mux\":%d,\"txa\":%lu,\"rxa\":%lu,\"txdlc\":%u,\"rxdlc\":%u,"
+                     "\"hasrx\":%s,\"tx\":[",
+                     driverJson, writeProbeSnapshot.active ? "true" : "false",
                  static_cast<unsigned int>(writeProbeSnapshot.state),
                  static_cast<unsigned long>(writeProbeSnapshot.id),
                  static_cast<int>(writeProbeSnapshot.mux),
@@ -1705,7 +3137,7 @@ static void handleSupport()
     DashWriteProbe writeProbeSnapshot = {};
     {
         DashDataGuard guard;
-        canOnlineSnapshot = canOnline && now - lastFrameMs <= 10000;
+        canOnlineSnapshot = canOnline && !Chassis::EventRecorder::postDeadlineReached(now, lastFrameMs);
         writeProbeSnapshot = dashWriteProbe;
     }
 
@@ -2125,6 +3557,7 @@ static ConfigResult ctrlApplyConfig(const ConfigArgs &args)
                 String("{\"ok\":false,\"error\":\"Nag Mode C is blocked on HW4 after reported control faults\"}")};
     }
 
+    AppHandlerGuard appGuard;
     uint8_t oldHw = hwMode;
     bool oldCan = canActive;
     bool oldSpeedAuto = dashSpeedProfileAuto;
@@ -2136,116 +3569,193 @@ static ConfigResult ctrlApplyConfig(const ConfigArgs &args)
     bool oldSlew = hw3OffsetSlew;
     uint8_t oldSlewRate = hw3SlewRate;
     bool hwChanged = false;
-    if (args.has("hw"))
+    bool speedManualLogged = false;
+    bool speedAutoLogged = false;
+    bool gateLogged = false;
+    bool summonOnlyLogged = false;
+    bool nagLogged = false;
+    bool replayLogged = false;
+    bool slewLogged = false;
+    bool slewRateLogged = false;
+    uint8_t loggedSpeed = 0;
+    bool loggedSpeedAuto = false;
+    bool loggedGate = false;
+    bool loggedSummonOnly = false;
+    uint8_t loggedNag = 0;
+    uint8_t loggedReplay = 0;
+    bool loggedSlew = false;
+    uint8_t loggedSlewRate = 0;
+    bool nagChanged = false;
     {
-        uint8_t v = static_cast<uint8_t>(hwValue);
-        if (v <= 2 && v != hwMode)
+        PluginLockGuard pluginGuard;
+        DashDataGuard dataGuard;
+        DashRecorderConfigUpdate recorderUpdate(dashRecorder);
+        const uint32_t commitNow = millis();
+        if (args.has("hw"))
         {
-            hwMode = v;
-            hwChanged = true;
-            dashLog("[CFG] HW=" + String(v == 0 ? "LEGACY" : v == 1 ? "HW3"
-                                                                    : "HW4"));
+            uint8_t v = static_cast<uint8_t>(hwValue);
+            if (v <= 2 && v != hwMode)
+            {
+                hwMode = v;
+                hwChanged = true;
+            }
         }
-    }
-    if (args.has("can"))
-        canActive = canValue;
-    bool profileAutoRequested = args.has("spa") && speedAutoValue;
-    if (args.has("sp"))
-    {
-        uint8_t v = static_cast<uint8_t>(speedValue);
-        if (!profileAutoRequested && (v != dashManualSpeedProfile || dashSpeedProfileAuto))
-            dashLog("[CFG] Speed profile manual " + String(v));
-        dashManualSpeedProfile = v;
-        if (!profileAutoRequested)
-            dashSpeedProfileAuto = false;
-    }
-    if (args.has("spa"))
-    {
-        bool v = speedAutoValue;
-        if (v != dashSpeedProfileAuto)
-            dashLog("[CFG] Speed profile " + String(v ? "AUTO" : "MANUAL"));
-        dashSpeedProfileAuto = v;
-    }
-    if (args.has("apg"))
-    {
-        bool v = gateValue;
-        if (v != apInjectionGate)
+        if (args.has("can"))
+            canActive = canValue;
+        bool profileAutoRequested = args.has("spa") && speedAutoValue;
+        if (args.has("sp"))
         {
-            apInjectionGate = v;
-            dashLog("[CFG] AP injection gate " + String(v ? "ON" : "OFF"));
+            uint8_t v = static_cast<uint8_t>(speedValue);
+            if (!profileAutoRequested && (v != dashManualSpeedProfile || dashSpeedProfileAuto))
+            {
+                speedManualLogged = true;
+                loggedSpeed = v;
+            }
+            dashManualSpeedProfile = v;
+            if (!profileAutoRequested)
+                dashSpeedProfileAuto = false;
         }
-    }
-    if (args.has("smo"))
-    {
-        bool v = summonOnlyValue;
-        if (v != summonOnlyInjection)
+        if (args.has("spa"))
         {
-            summonOnlyInjection = v;
-            dashLog("[CFG] Summon-only injection " + String(v ? "ON" : "OFF"));
+            bool v = speedAutoValue;
+            if (v != dashSpeedProfileAuto)
+            {
+                speedAutoLogged = true;
+                loggedSpeedAuto = v;
+            }
+            dashSpeedProfileAuto = v;
         }
-    }
-    if (args.has("nag"))
-    {
-        uint8_t v = static_cast<uint8_t>(nagModeValue);
-        if (v != dashNagMode)
+        if (args.has("apg"))
         {
-            dashNagMode = v;
-            dashLog("[CFG] Nag suppression " + String(nagModeName(v)));
-            dashReapplyFiltersWithPlugins();
+            bool v = gateValue;
+            if (v != apInjectionGate)
+            {
+                apInjectionGate = v;
+                gateLogged = true;
+                loggedGate = v;
+            }
         }
-    }
-    if (args.has("plgr"))
-    {
-        uint8_t previous = pluginGetReplayCount();
-        pluginSetReplayCount(replayValue);
-        if (pluginGetReplayCount() != previous)
-            dashLog("[CFG] Plugin replay x" + String(pluginGetReplayCount()));
-    }
-    if (args.has("hw3OffsetSlew") || args.has("offsetSlew"))
-    {
-        bool v = slewValue;
-        if (v != hw3OffsetSlew)
+        if (args.has("smo"))
         {
-            hw3OffsetSlew = v;
-            dashLog("[CFG] Offset slew " + String(v ? "ON" : "OFF"));
+            bool v = summonOnlyValue;
+            if (v != summonOnlyInjection)
+            {
+                summonOnlyInjection = v;
+                summonOnlyLogged = true;
+                loggedSummonOnly = v;
+            }
         }
-    }
-    if (args.has("hw3SlewRate") || args.has("offsetSlewRate"))
-    {
-        uint8_t v = static_cast<uint8_t>(slewRateValue);
-        if (v != hw3SlewRate)
+        if (args.has("nag"))
         {
-            hw3SlewRate = v;
-            dashLog("[CFG] Offset slew rate " + String(hw3SlewRate) + "%/s");
+            uint8_t v = static_cast<uint8_t>(nagModeValue);
+            if (v != dashNagMode)
+            {
+                dashNagMode = v;
+                nagLogged = true;
+                loggedNag = v;
+                nagChanged = true;
+            }
         }
+        if (args.has("plgr"))
+        {
+            uint8_t previous = pluginGetReplayCountLocked();
+            pluginSetReplayCountLocked(replayValue);
+            if (pluginGetReplayCountLocked() != previous)
+            {
+                replayLogged = true;
+                loggedReplay = pluginGetReplayCountLocked();
+            }
+        }
+        if (args.has("hw3OffsetSlew") || args.has("offsetSlew"))
+        {
+            bool v = slewValue;
+            if (v != hw3OffsetSlew)
+            {
+                hw3OffsetSlew = v;
+                slewLogged = true;
+                loggedSlew = v;
+            }
+        }
+        if (args.has("hw3SlewRate") || args.has("offsetSlewRate"))
+        {
+            uint8_t v = static_cast<uint8_t>(slewRateValue);
+            if (v != hw3SlewRate)
+            {
+                hw3SlewRate = v;
+                slewRateLogged = true;
+                loggedSlewRate = v;
+            }
+        }
+        // The effective mutation and its recorder publication share one
+        // timestamp while AppHandler -> Plugin -> Dash locks are held.
+        dashApplyRuntimeState(false);
+        dashRecordEffectiveConfigurationAt(commitNow, pluginGetReplayCountLocked());
     }
+#if defined(DASH_RGB_STATUS_LED)
+    appRefreshStatusLed();
+#endif
+
+    if (hwChanged)
+        dashLog("[CFG] HW=" + String(hwMode == 0 ? "LEGACY" : hwMode == 1 ? "HW3" : "HW4"));
+    if (speedManualLogged)
+        dashLog("[CFG] Speed profile manual " + String(loggedSpeed));
+    if (speedAutoLogged)
+        dashLog("[CFG] Speed profile " + String(loggedSpeedAuto ? "AUTO" : "MANUAL"));
+    if (gateLogged)
+        dashLog("[CFG] AP injection gate " + String(loggedGate ? "ON" : "OFF"));
+    if (summonOnlyLogged)
+        dashLog("[CFG] Summon-only injection " + String(loggedSummonOnly ? "ON" : "OFF"));
+    if (nagLogged)
+        dashLog("[CFG] Nag suppression " + String(nagModeName(loggedNag)));
+    if (replayLogged)
+        dashLog("[CFG] Plugin replay x" + String(loggedReplay));
+    if (slewLogged)
+        dashLog("[CFG] Offset slew " + String(loggedSlew ? "ON" : "OFF"));
+    if (slewRateLogged)
+        dashLog("[CFG] Offset slew rate " + String(loggedSlewRate) + "%/s");
+
+    if (nagChanged)
+        dashReapplyFiltersWithPlugins();
     if (hwChanged)
     {
         dashSwapHandler(hwMode);
         dashApplyFilters();
     }
-    dashApplyRuntimeState();
-    dashRefreshSummonOnlyPolicy();
+    {
+        DashDataGuard dataGuard;
+        dashApplyRuntimeState();
+        dashRecordEffectiveConfiguration();
+        dashRefreshSummonOnlyPolicy();
+    }
     if (!dashSavePrefs())
     {
-        hwMode = oldHw;
-        canActive = oldCan;
-        dashSpeedProfileAuto = oldSpeedAuto;
-        dashManualSpeedProfile = oldSpeed;
-        apInjectionGate = oldGate;
-        summonOnlyInjection = oldSummonOnly;
-        dashNagMode = oldNagMode;
-        pluginSetReplayCount(oldReplay);
-        hw3OffsetSlew = oldSlew;
-        hw3SlewRate = oldSlewRate;
+        {
+            PluginLockGuard pluginGuard;
+            DashDataGuard dataGuard;
+            DashRecorderConfigUpdate recorderUpdate(dashRecorder);
+            hwMode = oldHw;
+            canActive = oldCan;
+            dashSpeedProfileAuto = oldSpeedAuto;
+            dashManualSpeedProfile = oldSpeed;
+            apInjectionGate = oldGate;
+            summonOnlyInjection = oldSummonOnly;
+            dashNagMode = oldNagMode;
+            pluginSetReplayCountLocked(oldReplay);
+            hw3OffsetSlew = oldSlew;
+            hw3SlewRate = oldSlewRate;
+        }
         if (hwChanged)
         {
             dashSwapHandler(oldHw);
             dashApplyFilters();
         }
-        dashApplyRuntimeState();
+        {
+            DashDataGuard dataGuard;
+            dashApplyRuntimeState();
+            dashRecordEffectiveConfiguration();
+            dashRefreshSummonOnlyPolicy();
+        }
         dashReapplyFiltersWithPlugins();
-        dashRefreshSummonOnlyPolicy();
         return {500, String("{\"ok\":false,\"error\":\"NVS write failed\"}")};
     }
     return {200, String("{\"ok\":true}")};
@@ -4435,10 +5945,53 @@ static void dashPluginProcess(const CanFrame &frame, CanDriver &driver)
     pluginProcessFrame(frame, driver);
 }
 
+// BLE mode deliberately skips the WiFi/HTTP task. Keep recorder deadline,
+// CAN-loss detection, and board-local persistence alive without touching WiFi.
+static void recorderMaintenanceTask(void *)
+{
+    for (;;)
+    {
+        try
+        {
+            dashEventTick();
+        }
+        catch (const std::bad_alloc &)
+        {
+            Serial.println("[ERR] Recorder maintenance out of memory");
+        }
+        catch (const std::exception &)
+        {
+            Serial.println("[ERR] Recorder maintenance failed");
+        }
+        catch (...)
+        {
+            Serial.println("[ERR] Recorder maintenance failed");
+        }
+        vTaskDelay(pdMS_TO_TICKS(250));
+    }
+}
+
+static void dashStartRecorderMaintenance()
+{
+#if SOC_CPU_CORES_NUM == 1
+    BaseType_t result = xTaskCreate(recorderMaintenanceTask, "recorder", 12288,
+                                    nullptr, 1, nullptr);
+#else
+    BaseType_t result = xTaskCreatePinnedToCore(recorderMaintenanceTask, "recorder", 12288,
+                                                nullptr, 1, nullptr, 1);
+#endif
+    if (result != pdPASS)
+        dashLog("[ERR] Recorder maintenance task failed to start");
+}
+
 static void dashNagProcess(CanFrame frame, CanDriver &driver)
 {
     if (dashNagMode == static_cast<uint8_t>(NagMode::Disabled))
+    {
+        if (appDashboardDecisionObserver)
+            appDashboardDecisionObserver(false, "nag_disabled");
         return;
+    }
     dashNagHandler.handleMessageAt(frame, driver, millis(), dashInjectionActive());
 }
 
@@ -4475,6 +6028,14 @@ static void webTask(void *)
     }
 }
 
+static void mcpDashOnActiveSpeedProfile(uint8_t profile)
+{
+    DashDataGuard guard;
+    const uint32_t now = dashHandler ? dashHandler->speedProfileChangeMs : millis();
+    dashRecorder.recordSetting(kRecorderSettingSpeedProfile,
+                               dashClampSpeedProfileForHw(hwMode, profile), now);
+}
+
 static CarManagerBase *handlerPool[3] = {};
 
 static void dashInitHandlers()
@@ -4488,6 +6049,7 @@ static void dashInitHandlers()
     for (int i = 0; i < 3; i++)
     {
         handlerPool[i]->onFrame = mcpDashOnFrame;
+        handlerPool[i]->onSpeedProfileChanged = mcpDashOnActiveSpeedProfile;
     }
     // The active car handler already observes every original RX frame.
     // A second Nag callback would duplicate DAS/steering/0x370 in telemetry/logs.
@@ -4530,8 +6092,15 @@ static void dashSwapHandler(uint8_t mode)
     dashTelemetry.setLayout(mode == 0 ? Chassis::DasLayout::LegacyHw3
                                      : mode == 2 ? Chassis::DasLayout::StandardHw4
                                                   : Chassis::DasLayout::LegacyHw3);
-    dashApplyRuntimeState();
+    dashApplyRuntimeState(false);
     appActiveHandler = next;
+    // Handler installation changes the effective profile even when automatic
+    // mode selects the same vehicle input. Publish at this boundary so boot
+    // and runtime swaps cannot leave a stale recorder snapshot.
+    dashRecordEffectiveConfiguration();
+#if defined(DASH_RGB_STATUS_LED)
+    appRefreshStatusLed();
+#endif
     // Preserve plugin acceptance IDs across handler changes.
     dashReapplyFiltersWithPlugins();
     const char *hwName = "LEGACY";
@@ -4571,12 +6140,31 @@ static void mcpDashboardSetup(CarManagerBase *handler, CanDriver *driver)
     dashDriver = driver;
 #endif
     appDashboardTxObserver = mcpDashOnTxFrame;
+    appDashboardTxAttemptObserver = mcpDashOnTxAttemptFrame;
+    appDashboardDecisionObserver = mcpDashOnInjectionDecision;
     pluginSetDiagnosticsLogger([](const char *message)
                                { dashLog(String(message)); });
     dashResetWriteProbe();
 
-    if (!SPIFFS.begin(true))
+    const bool spiffsReady = SPIFFS.begin(false);
+    if (!spiffsReady)
         dashLog("[WARN] SPIFFS mount failed");
+    else
+    {
+        dashMigrateLegacyIncident();
+        dashTrimAckTombstones();
+        dashFindLatestIncidentPath();
+        dashRefreshIncidentStats();
+    }
+
+#ifdef ESP_PLATFORM
+    dashRecorder.configure(RuntimeDiagnostics::psramVerified.load(std::memory_order_relaxed),
+                            RuntimeDiagnostics::systemInfo.psramBytes);
+#else
+    dashRecorder.configure(false, 0);
+#endif
+    // Board-local recording is armed by default; /event_control can disable it.
+    dashRecorder.enable(true);
 
     dashLoadPrefs();
     if (!dashBleMode)
@@ -4615,6 +6203,7 @@ static void mcpDashboardSetup(CarManagerBase *handler, CanDriver *driver)
     // bring-up so the radio stays free for BLE (started from main after this).
     if (dashBleMode)
     {
+        dashStartRecorderMaintenance();
         dashLog("[BOOT] ev-open-can-tools ready (BLE mode)");
         return;
     }
@@ -4653,7 +6242,9 @@ static void mcpDashboardSetup(CarManagerBase *handler, CanDriver *driver)
     server.on("/update", HTTP_POST, handleOtaResult, handleOtaUpload);
     server.on("/diagnostics_detail", HTTP_GET, handleDiagnosticDetails);
     server.on("/event_control", HTTP_POST, handleEventControl);
+    server.on("/event_list", HTTP_GET, handleEventList);
     server.on("/event_download", HTTP_GET, handleEventDownload);
+    server.on("/event_ack", HTTP_POST, handleEventAck);
     server.on("/plugins", HTTP_GET, handlePluginList);
     server.on("/plugin_upload", HTTP_POST, handlePluginUpload);
     server.on("/plugin_install", HTTP_POST, handlePluginInstallFromUrl);
@@ -4707,7 +6298,7 @@ static void mcpDashboardLoop()
     bool wentOffline = false;
     {
         DashDataGuard guard;
-        if (canOnline && millis() - lastFrameMs > 10000)
+        if (canOnline && Chassis::EventRecorder::postDeadlineReached(millis(), lastFrameMs))
         {
             canOnline = false;
             wentOffline = true;

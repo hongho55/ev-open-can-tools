@@ -127,11 +127,23 @@ struct CarManagerBase
 
     void (*onFrame)(const CanFrame &) = nullptr;
     void (*onSend)(uint8_t mux, bool ok) = nullptr;
+    void (*onSpeedProfileChanged)(uint8_t profile) = nullptr;
+    uint32_t speedProfileChangeMs = 0;
     bool (*checkAD)() = nullptr;
     bool (*checkNag)() = nullptr;
     bool (*checkSummon)() = nullptr;
     bool (*checkIsa)() = nullptr;
     bool (*checkEvd)() = nullptr;
+
+    void notifySpeedProfileChanged(int previous, uint32_t changedMs = 0)
+    {
+        const int current = speedProfile;
+        if (current != previous && onSpeedProfileChanged)
+        {
+            speedProfileChangeMs = changedMs;
+            onSpeedProfileChanged(static_cast<uint8_t>(current));
+        }
+    }
 
     bool injectionGateOpen() const
     {
@@ -380,12 +392,15 @@ struct LegacyHandler : public CarManagerBase
             if (!speedProfileAuto)
                 return;
             uint8_t pos = frame.data[1] >> 5;
+            const int previousProfile = speedProfile;
+            const uint32_t profileChangeMs = diagnosticMillis();
             if (pos <= 1)
                 speedProfile = 2;
             else if (pos == 2)
                 speedProfile = 1;
             else
                 speedProfile = 0;
+            notifySpeedProfileChanged(previousProfile, profileChangeMs);
             return;
         }
         if (frame.id == 280)
@@ -550,6 +565,8 @@ struct HW3Handler : public CarManagerBase
             if (!speedProfileAuto)
                 return;
             uint8_t followDistance = (frame.data[5] & 0b11100000) >> 5;
+            const int previousProfile = speedProfile;
+            const uint32_t profileChangeMs = diagnosticMillis();
             switch (followDistance)
             {
             case 1:
@@ -564,6 +581,7 @@ struct HW3Handler : public CarManagerBase
             default:
                 break;
             }
+            notifySpeedProfileChanged(previousProfile, profileChangeMs);
             return;
         }
         if (frame.id == 921)
@@ -1118,6 +1136,8 @@ struct HW4Handler : public CarManagerBase
             if (!speedProfileAuto)
                 return;
             auto fd = (frame.data[5] & 0b11100000) >> 5;
+            const int previousProfile = speedProfile;
+            const uint32_t profileChangeMs = diagnosticMillis();
             switch (fd)
             {
             case 1:
@@ -1136,6 +1156,7 @@ struct HW4Handler : public CarManagerBase
                 speedProfile = 4;
                 break;
             }
+            notifySpeedProfileChanged(previousProfile, profileChangeMs);
         }
         if (frame.id == 2047)
         {

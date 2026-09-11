@@ -100,6 +100,8 @@ static CarManagerBase *appGetActiveHandler()
 // Plugin processing hook — set by dashboard to apply plugin rules after handler
 static void (*appPluginProcess)(const CanFrame &, CanDriver &) = nullptr;
 static void (*appDashboardTxObserver)(const CanFrame &, bool) = nullptr;
+static void (*appDashboardTxAttemptObserver)(const CanFrame &, bool, bool) = nullptr;
+static void (*appDashboardDecisionObserver)(bool, const char *) = nullptr;
 
 static bool appInjectionReady()
 {
@@ -113,17 +115,29 @@ static bool appInjectionReady()
 static bool appCanTransmitAllowed(const CanFrame &)
 {
     if (!appInjectionReady())
+    {
+        if (appDashboardDecisionObserver) appDashboardDecisionObserver(false, "startup_or_can_stale");
         return false;
+    }
     if (!summonOnlyInjectionRuntime)
+    {
+        if (appDashboardDecisionObserver) appDashboardDecisionObserver(true, "allowed");
         return true;
+    }
 
     AppHandlerGuard guard;
     CarManagerBase *handler = appGetActiveHandler();
     if (!handler)
         handler = appHandler.get();
     if (!handler)
+    {
+        if (appDashboardDecisionObserver) appDashboardDecisionObserver(false, "handler_unavailable");
         return false;
-    return handler->summonOnlyInjectionDecisionAt(CarManagerBase::diagnosticMillis()).allowed;
+    }
+    const bool allowed = handler->summonOnlyInjectionDecisionAt(CarManagerBase::diagnosticMillis()).allowed;
+    if (appDashboardDecisionObserver)
+        appDashboardDecisionObserver(allowed, allowed ? "allowed" : "summon_policy_blocked");
+    return allowed;
 }
 
 static void appOnSendFrame(const CanFrame &frame, bool ok)
@@ -133,6 +147,12 @@ static void appOnSendFrame(const CanFrame &frame, bool ok)
 #endif
     if (appDashboardTxObserver)
         appDashboardTxObserver(frame, ok);
+}
+
+static void appOnSendAttempt(const CanFrame &frame, bool ok, bool attempted)
+{
+    if (appDashboardTxAttemptObserver)
+        appDashboardTxAttemptObserver(frame, ok, attempted);
 }
 
 #ifdef ESP_PLATFORM
@@ -323,6 +343,7 @@ static void appPrepare(std::unique_ptr<Driver> drv)
     appDriver = std::move(drv);
     appDriver->allowSendFrame = appCanTransmitAllowed;
     appDriver->onSendFrame = appOnSendFrame;
+    appDriver->onSendAttempt = appOnSendAttempt;
 #ifdef ESP_PLATFORM
     GvretSerial::setMonitorCallback(appSetCanMonitorAll);
     appSetCanMonitorAll(GvretSerial::clientConnected.load(std::memory_order_relaxed));

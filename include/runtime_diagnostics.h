@@ -50,6 +50,8 @@ inline std::atomic<uint32_t> noCanWarnings{0};
 inline std::atomic<uint32_t> supportRequests{0};
 inline std::atomic<uint32_t> lastSupportBytes{0};
 inline std::atomic<uint32_t> lastStatusBytes{0};
+inline std::atomic<bool> psramVerified{false};
+inline std::atomic<uint32_t> psramProbeBytes{0};
 inline std::atomic<NvsState> nvsState{NvsState::Unknown};
 inline std::atomic<int32_t> nvsInitialError{ESP_OK};
 inline std::atomic<int32_t> nvsFinalError{ESP_OK};
@@ -59,6 +61,30 @@ inline esp_reset_reason_t bootResetReason = ESP_RST_UNKNOWN;
 inline StaticSystemInfo systemInfo;
 inline TaskHandle_t mainTaskHandle = nullptr;
 RTC_DATA_ATTR inline uint32_t rtcBootCount = 0;
+
+inline bool probePsram(size_t totalBytes)
+{
+    constexpr size_t kProbeBytes = 1024;
+    if (totalBytes < kProbeBytes)
+        return false;
+    uint8_t *probe = static_cast<uint8_t *>(heap_caps_malloc(kProbeBytes,
+                                                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!probe)
+        return false;
+    bool ok = true;
+    for (size_t i = 0; i < kProbeBytes; ++i)
+        probe[i] = static_cast<uint8_t>((i * 37u) ^ 0xA5u);
+    for (size_t i = 0; i < kProbeBytes; ++i)
+    {
+        if (probe[i] != static_cast<uint8_t>((i * 37u) ^ 0xA5u))
+        {
+            ok = false;
+            break;
+        }
+    }
+    heap_caps_free(probe);
+    return ok;
+}
 
 inline const char *resetReasonName(esp_reset_reason_t reason)
 {
@@ -98,11 +124,17 @@ inline void begin()
     esp_flash_get_size(esp_flash_default_chip, &systemInfo.flashBytes);
     systemInfo.internalRamBytes = heap_caps_get_total_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     systemInfo.psramBytes = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+    const bool psramOk = probePsram(systemInfo.psramBytes);
+    psramVerified.store(psramOk, std::memory_order_relaxed);
+    psramProbeBytes.store(psramOk ? 1024u : 0u, std::memory_order_relaxed);
     Serial.printf("[BOOT] reset=%d (%s) rtcBootCount=%lu\n", static_cast<int>(bootResetReason),
                   resetReasonName(bootResetReason), static_cast<unsigned long>(rtcBootCount));
     if (bootResetReason == ESP_RST_BROWNOUT)
         Serial.println("[WARN] Previous reset was caused by brownout");
     Serial.printf("[BOOT] ESP-IDF %s\n", esp_get_idf_version());
+    Serial.printf("[BOOT] PSRAM total=%lu probe=%s probeBytes=%lu\n",
+                  static_cast<unsigned long>(systemInfo.psramBytes), psramOk ? "verified" : "failed",
+                  static_cast<unsigned long>(psramProbeBytes.load(std::memory_order_relaxed)));
 }
 
 inline void noteNvsInitialization(esp_err_t initialError, esp_err_t finalError, bool recovered)

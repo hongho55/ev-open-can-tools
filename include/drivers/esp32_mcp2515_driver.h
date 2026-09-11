@@ -214,7 +214,10 @@ public:
             {
 #ifdef ESP_PLATFORM
                 if (readError != MCP2515::ERROR_NOMSG)
+                {
+                    ++errorCount_;
                     initialized_ = false;
+                }
 #endif
                 unlock();
                 return false;
@@ -224,6 +227,7 @@ public:
                 continue;
 #endif
             frame.id = raw.can_id;
+            frame.physicalBus = physicalBus();
             frame.dlc = raw.can_dlc <= 8 ? raw.can_dlc : 8;
             memcpy(frame.data, raw.data, 8);
             unlock();
@@ -235,10 +239,19 @@ public:
 
     bool send(const CanFrame &frame) override
     {
+        bool attempted = false;
+        return sendWithAttempt(frame, attempted);
+    }
+
+    bool sendWithAttempt(const CanFrame &frame, bool &attempted) override
+    {
+        attempted = false;
         if (!sendAllowed(frame) || frame.id > 0x7FF || frame.dlc > 8)
         {
             if (onSendFrame)
                 onSendFrame(frame, false);
+            if (onSendAttempt)
+                onSendAttempt(frame, false, false);
             return false;
         }
 #ifdef ESP_PLATFORM
@@ -246,6 +259,8 @@ public:
         {
             if (onSendFrame)
                 onSendFrame(frame, false);
+            if (onSendAttempt)
+                onSendAttempt(frame, false, false);
             return false;
         }
 #endif
@@ -256,6 +271,8 @@ public:
             unlock();
             if (onSendFrame)
                 onSendFrame(frame, false);
+            if (onSendAttempt)
+                onSendAttempt(frame, false, false);
             return false;
         }
 #endif
@@ -263,10 +280,19 @@ public:
         raw.can_id = frame.id;
         raw.can_dlc = frame.dlc;
         memcpy(raw.data, frame.data, 8);
+        attempted = true;
         bool ok = mcp_.sendMessage(&raw) == MCP2515::ERROR_OK;
+        if (!ok)
+            ++errorCount_;
         unlock();
         if (onSendFrame)
             onSendFrame(frame, ok);
+        if (onSendAttempt)
+        {
+            CanFrame physical = frame;
+            physical.physicalBus = physicalBus();
+            onSendAttempt(physical, ok, attempted);
+        }
         return ok;
     }
 
@@ -283,6 +309,21 @@ public:
     }
 
     MCP2515 &mcp() { return mcp_; }
+
+    bool reportsPhysicalTxAttempts() const override { return true; }
+    uint8_t physicalBus() const override { return CAN_BUS_CAN_A; }
+
+    uint32_t healthErrorCount() const override
+    {
+        lock();
+        uint32_t count = errorCount_;
+#ifdef ESP_PLATFORM
+        if (mcp_.getErrorFlags() != 0)
+            ++count;
+#endif
+        unlock();
+        return count;
+    }
 
     void configurationSummary(char *out, size_t outLen) const override
     {
@@ -438,8 +479,9 @@ private:
 #endif
     }
 
-    MCP2515 mcp_;
+    mutable MCP2515 mcp_;
     uint8_t csPin_ = 0;
+    mutable uint32_t errorCount_ = 0;
 #ifdef ESP_PLATFORM
     mutable SemaphoreHandle_t mutex_ = nullptr;
     uint32_t exactFilterIds_[kMaxExactFilters] = {};

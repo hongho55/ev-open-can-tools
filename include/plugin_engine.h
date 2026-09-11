@@ -204,10 +204,22 @@ static uint8_t pluginReplayCount = pluginClampReplayCount(PLUGIN_REPLAY_COUNT);
 
 static void pluginResetDiagnostics();
 
+// Callers that already hold PluginLockGuard use these helpers so compound
+// dashboard commits can acquire PluginLockGuard before DashDataGuard.
+static void pluginSetReplayCountLocked(int32_t count)
+{
+    pluginReplayCount = pluginClampReplayCount(count);
+}
+
+static uint8_t pluginGetReplayCountLocked()
+{
+    return pluginReplayCount;
+}
+
 static void pluginSetReplayCount(int32_t count)
 {
     PluginLockGuard guard;
-    pluginReplayCount = pluginClampReplayCount(count);
+    pluginSetReplayCountLocked(count);
 }
 
 static void pluginSetDiagnosticsLogger(void (*logger)(const char *message))
@@ -1449,6 +1461,12 @@ static void pluginCachePeriodicEmit(const CanFrame &frame, uint16_t intervalMs, 
 
 static void pluginEmitPeriodicTick(CanDriver &driver, unsigned long now)
 {
+#if defined(ESP32_DASHBOARD) && !defined(NATIVE_BUILD)
+    // The CAN loop already uses AppHandlerGuard before plugin processing.
+    // Keep periodic emission in the same order: AppHandler -> Plugin -> Dash.
+    // driver.send() may synchronously invoke dashboard policy/observations.
+    AppHandlerGuard appGuard;
+#endif
     PluginLockGuard guard(false);
     if (!guard)
         return;

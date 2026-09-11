@@ -406,6 +406,8 @@ public:
     bool close();
     size_t write(const uint8_t *buf, size_t len);
     size_t read(uint8_t *buf, size_t len);
+    size_t size() const;
+    bool hasReadError() const { return readError_; }
     String readString();
     size_t print(const String &value);
     size_t print(unsigned long value);
@@ -423,6 +425,7 @@ private:
     std::string basePath_;
     std::string name_;
     bool writeError_ = false;
+    bool readError_ = false;
 };
 
 class SPIFFSClass
@@ -582,7 +585,7 @@ public:
     void send_P(int code, const char *type, const char *body) { sendRaw(code, type, body, body ? std::strlen(body) : 0); }
     void sendRaw(int code, const char *type, const char *body, size_t len);
     void sendHeader(const char *name, const char *value);
-    void streamFile(File &file, const char *type);
+    bool streamFile(File &file, const char *type, size_t &sentBytes);
     bool authenticate(const char *user, const char *pass);
     void requestAuthentication();
     HTTPUpload &upload() { return upload_; }
@@ -618,6 +621,7 @@ private:
     std::atomic<uint32_t> requestCount_{0};
     std::atomic<uint32_t> responseBytes_{0};
     std::atomic<uint32_t> maxResponseBytes_{0};
+    bool responseFailed_ = false;
 };
 
 class ESPClass

@@ -24,26 +24,22 @@ The status tab now includes pack voltage/current, display SOC, battery min/max
 
 ## Event recorder
 
-Default OFF; not persisted. Start recording in the status tab. Automatic triggers
-are the first observed DAS abort code 8/9 in a transition, or an increase in the
-exposed CAN diagnostic error counters or a ready-to-offline transition
-(checked every 250 ms). The latter is a
-**CAN-error event**, not proof of bus-off. Manual marking is also available.
+Armed by default. Automatic triggers cover normal AP disengagement, DAS abort
+codes 8/9, CAN error-counter increases, and receive-liveness loss; manual marking
+is also available. Recording freezes exactly 10 seconds after the trigger and is
+persisted as generation-specific JSONL in SPIFFS.
 
-A fixed RAM ring retains up to 192 pre-event and 64 post-event key RX frames.
-Post-event collection ends after 64 key frames or 2 seconds, whichever comes
-first. Pre-event duration depends on bus rate; it is not a guaranteed time
-window. Only one incident is retained; explicitly start/clear to rearm. Download
-is available once frozen. Concurrent clearing cannot mix incidents in a download.
-
-The candump log uses uptime-relative timestamps and `can0` = Party/CAN A,
-`can1` = CH/VEH/CAN B. These are RX observations only; this recorder does not
-label bus-observed echoes as transmitted frames. No replay, automatic filesystem
-writes, or flash persistence is included. RAM records disappear on reboot.
-The status endpoint reports event reason/count/trigger uptime separately.
+Separate bounded raw RX/TX and state/decision rings preserve pre-trigger and
+post-trigger partitions. The N16R8 target uses PSRAM when its boot probe passes
+and otherwise uses a larger internal-RAM fallback. Capacity, measured coverage,
+and drop counters are reported by the status endpoints and are authoritative.
+See `docs/vehicle-flight-recorder.md` for the current schema and preservation
+details.
 
 Endpoints: GET `/diagnostics_detail`, POST `/event_control` with form `action`
-(`enable`, `disable`, `clear`, `mark`), GET `/event_download`.
+(`enable`, `disable`, `clear`, `mark`), authenticated GET `/event_list`,
+authenticated GET `/event_download?id=<sequence>-<slot>`, and authenticated
+POST `/event_ack` with `id`, `size`, and `sha256` form fields.
 
 ## Source and verification
 
