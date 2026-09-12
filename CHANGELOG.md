@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Added the read-only BLE `snapshot` command using the versioned `t2can-maintenance-snapshot-v1` schema. It combines firmware identity, runtime counters, CAN driver health, receive-side telemetry, and current configuration without enabling CAN transmission or changing state.
 - Added `scripts/collect_vehicle_snapshot.py` for bounded Mac-side collection from private ESP32 dashboard endpoints. It writes an atomic mode-0600 JSON artifact, rejects public hosts by default, and redacts local network identity from the optional support report.
+- Added `scripts/collect_vehicle_incidents.py`, a one-shot read-only incident sync client that verifies event metadata and content before private archive commit and `/event_ack`.
+- Added `scripts/receive_vehicle_incidents.py`, a localhost-only receiver for S26 uploads with bearer-token authentication, bounded bodies, idempotent duplicate handling, conflict detection, and durable read-back verification.
+- Added the automatic sync design and S26 state machine in `docs/vehicle-automatic-sync.md`; the Android app and Tailscale Serve deployment remain separate follow-up slices.
 
 ### Safety
 
