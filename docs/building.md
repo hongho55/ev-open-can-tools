@@ -20,7 +20,7 @@ This project uses PlatformIO. You select a board environment, create a local pro
 | `esp32s2_twai` | ESP32-S2 Saola | Built-in TWAI | Yes |
 | `esp32c6_twai` | ESP32-C6 DevKitC-1 | Built-in TWAI | Yes |
 | `lilygo_tcan485_hw3` | LILYGO TCAN485 | Built-in TWAI | Yes |
-| `lilygo_t2can` | LILYGO T-2CAN | SPI MCP2515 (CAN A / Party CAN) | Yes |
+| `lilygo_t2can` | LILYGO T-2CAN | CAN A: SPI MCP2515 / CAN B: native TWAI | Yes |
 | `m5stack-atomic-can-base` | M5Stack Atom CAN Base | Built-in TWAI | Yes |
 | `m5stack-atoms3-mini-can-base` | M5Stack AtomS3 Mini CAN Base | Built-in TWAI | Yes |
 | `esp32_feather_v2_mcp2515` | Feather ESP32 V2 + external MCP2515 | SPI MCP2515 | Yes |
@@ -31,7 +31,7 @@ This project uses PlatformIO. You select a board environment, create a local pro
 
 The first ten are ESP-IDF dashboard builds. The last two are legacy Arduino builds without the web dashboard.
 
-The LILYGO T-2CAN build uses the board connector labeled **CAN A**, backed by its onboard MCP2515. CAN B/TWAI is not used by this environment. Connect only CAN A to the verified Party CAN pair for nag suppression.
+The LILYGO T-2CAN build exposes both physical CAN connectors: **CAN A (board CAN1)** is backed by the onboard MCP2515 and is the project Party CAN path; **CAN B (board CAN2)** uses the ESP32-S3 native TWAI controller and is the project Vehicle/Chassis path. For a read-only dual-bus capture, connect each verified vehicle CAN pair to its corresponding board connector. For the hands-on-wheel experiment, connect only the verified Party CAN pair to CAN A and keep injection Off.
 
 ## Create a local profile
 
