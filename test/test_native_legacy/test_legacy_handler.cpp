@@ -81,7 +81,7 @@ void test_legacy_AD_enabled_on_mux0()
 {
     CanFrame f = {.id = 1006};
     f.data[0] = 0x00; // mux 0
-    f.data[4] = 0x20; // AD bit set
+    f.data[4] = 0x40; // AD bit set
     handler.handleMessage(f, mock);
     TEST_ASSERT_TRUE(handler.ADEnabled);
     TEST_ASSERT_EQUAL(1, mock.sent.size());
@@ -101,7 +101,7 @@ void test_legacy_AD_sets_bit46()
 {
     CanFrame f = {.id = 1006};
     f.data[0] = 0x00;
-    f.data[4] = 0x20;
+    f.data[4] = 0x40;
     handler.handleMessage(f, mock);
     TEST_ASSERT_EQUAL(1, mock.sent.size());
     TEST_ASSERT_EQUAL_HEX8(0x40, mock.sent[0].data[5] & 0x40);
@@ -112,7 +112,7 @@ void test_legacy_AD_applies_selected_speed_profile_bits()
     handler.speedProfile = 2;
     CanFrame f = {.id = 1006};
     f.data[0] = 0x00;
-    f.data[4] = 0x20;
+    f.data[4] = 0x40;
     f.data[6] = 0x02;
     handler.handleMessage(f, mock);
     TEST_ASSERT_EQUAL_HEX8(0x04, mock.sent[0].data[6] & 0x06);
@@ -124,7 +124,7 @@ void test_legacy_checkAD_blocks_mux0_send()
 
     CanFrame f = {.id = 1006};
     f.data[0] = 0x00;
-    f.data[4] = 0x20;
+    f.data[4] = 0x40;
     handler.handleMessage(f, mock);
     TEST_ASSERT_FALSE(handler.ADEnabled);
     TEST_ASSERT_EQUAL(0, mock.sent.size());

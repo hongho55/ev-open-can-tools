@@ -140,7 +140,7 @@ void test_hw4_AD_enabled_only_set_on_mux0()
 {
     CanFrame f0 = {.id = 1021};
     f0.data[0] = 0x00;
-    f0.data[4] = 0x20;
+    f0.data[4] = 0x40;
     handler.handleMessage(f0, mock);
     TEST_ASSERT_TRUE(handler.ADEnabled);
 
@@ -159,7 +159,7 @@ void test_hw4_AD_mux0_sets_bits_46_and_60()
 {
     CanFrame f = {.id = 1021};
     f.data[0] = 0x00;
-    f.data[4] = 0x20;
+    f.data[4] = 0x40;
     handler.handleMessage(f, mock);
     TEST_ASSERT_EQUAL(1, mock.sent.size());
     TEST_ASSERT_EQUAL_HEX8(0x40, mock.sent[0].data[5] & 0x40); // bit 46
@@ -170,7 +170,7 @@ void test_hw4_AD_mux0_sets_emergency_bit59()
 {
     CanFrame f = {.id = 1021};
     f.data[0] = 0x00;
-    f.data[4] = 0x20;
+    f.data[4] = 0x40;
     handler.handleMessage(f, mock);
     TEST_ASSERT_EQUAL(1, mock.sent.size());
     TEST_ASSERT_EQUAL_HEX8(0x08, mock.sent[0].data[7] & 0x08); // bit 59
@@ -181,7 +181,7 @@ void test_hw4_AD_mux0_skips_emergency_bit59_when_runtime_disabled()
     emergencyVehicleDetectionRuntime = false;
     CanFrame f = {.id = 1021};
     f.data[0] = 0x00;
-    f.data[4] = 0x20;
+    f.data[4] = 0x40;
     handler.handleMessage(f, mock);
     TEST_ASSERT_EQUAL(1, mock.sent.size());
     TEST_ASSERT_EQUAL_HEX8(0x00, mock.sent[0].data[7] & 0x08);
@@ -203,7 +203,7 @@ void test_hw4_checkAD_blocks_mux0_and_mux2_send()
 
     CanFrame f0 = {.id = 1021};
     f0.data[0] = 0x00;
-    f0.data[4] = 0x20;
+    f0.data[4] = 0x40;
     handler.handleMessage(f0, mock);
     TEST_ASSERT_FALSE(handler.ADEnabled);
     TEST_ASSERT_EQUAL(0, mock.sent.size());
@@ -245,7 +245,7 @@ void test_hw4_mux2_does_not_inject_speed_profile()
     handler.speedProfile = 3;
     CanFrame f0 = {.id = 1021};
     f0.data[0] = 0x00;
-    f0.data[4] = 0x20;
+    f0.data[4] = 0x40;
     handler.handleMessage(f0, mock);
     mock.reset();
     CanFrame f = {.id = 1021};
@@ -260,7 +260,7 @@ void test_hw4_mux2_preserves_old_profile_bits_by_not_sending()
     handler.speedProfile = 0;
     CanFrame f0 = {.id = 1021};
     f0.data[0] = 0x00;
-    f0.data[4] = 0x20;
+    f0.data[4] = 0x40;
     handler.handleMessage(f0, mock);
     mock.reset();
     CanFrame f = {.id = 1021};
@@ -275,7 +275,7 @@ void test_hw4_mux0_AD_enabled_sends_1()
 {
     CanFrame f = {.id = 1021};
     f.data[0] = 0x00;
-    f.data[4] = 0x20;
+    f.data[4] = 0x40;
     handler.handleMessage(f, mock);
     TEST_ASSERT_EQUAL(1, mock.sent.size());
 }
@@ -292,7 +292,7 @@ void test_hw4_mux2_sends_0()
 {
     CanFrame f0 = {.id = 1021};
     f0.data[0] = 0x00;
-    f0.data[4] = 0x20;
+    f0.data[4] = 0x40;
     handler.handleMessage(f0, mock);
     mock.reset();
     CanFrame f = {.id = 1021};
@@ -313,7 +313,7 @@ void test_hw4_manual_profile_injects_mux2_speed_profile()
     handler.handleMessage(f, mock);
 
     TEST_ASSERT_EQUAL(1, mock.sent.size());
-    TEST_ASSERT_EQUAL_HEX8(0x40, mock.sent[0].data[7] & 0x70);
+    TEST_ASSERT_EQUAL_HEX8(0x80, mock.sent[0].data[7] & 0xE0);
 }
 
 void test_hw4_ignores_unrelated_can_id()

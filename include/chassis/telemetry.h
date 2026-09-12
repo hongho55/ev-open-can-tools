@@ -27,6 +27,7 @@ enum class TelemetrySignal : uint8_t
     UiMapData,
     DasControl,
     DasStatus2,
+    DasSettings,
     DasLegacyStatus,
     DasHw4Status,
     ApLegacy,
@@ -135,7 +136,8 @@ private:
             signal = TelemetrySignal::DasLegacyStatus;
             return true;
         case kDasHw4Id:
-            if (layout_ != DasLayout::StandardHw4 ||
+            if ((layout_ != DasLayout::StandardHw4 &&
+                 layout_ != DasLayout::HighlandHw4Byte0) ||
                 !validDlc(frame, 8, true)) return false;
             signal = TelemetrySignal::DasHw4Status;
             return true;
@@ -166,6 +168,10 @@ private:
         case kDasStatus2Id:
             if (!validDlc(frame, 5)) return false;
             signal = TelemetrySignal::DasStatus2;
+            return true;
+        case kDasSettingsId:
+            if (!validDlc(frame, 5)) return false;
+            signal = TelemetrySignal::DasSettings;
             return true;
         case kApLegacyId:
             if (!validDlc(frame, 8, true)) return false;

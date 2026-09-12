@@ -89,7 +89,7 @@ void test_hw3_enhanced_autopilot_waits_for_ap_before_mux1_injection()
 
     CanFrame observedUiConfig = {.id = 1021};
     observedUiConfig.data[0] = 0x00;
-    observedUiConfig.data[4] = 0x20;
+    observedUiConfig.data[4] = 0x40;
     handler.handleMessage(observedUiConfig, mock);
     TEST_ASSERT_TRUE(handler.ADEnabled);
     TEST_ASSERT_FALSE(handler.APActive);
@@ -212,7 +212,7 @@ void test_hw4_enhanced_autopilot_waits_for_ap_before_mux1_injection()
 
     CanFrame observedUiConfig = {.id = 1021};
     observedUiConfig.data[0] = 0x00;
-    observedUiConfig.data[4] = 0x20;
+    observedUiConfig.data[4] = 0x40;
     handler.handleMessage(observedUiConfig, mock);
     TEST_ASSERT_TRUE(handler.ADEnabled);
     TEST_ASSERT_FALSE(handler.APActive);

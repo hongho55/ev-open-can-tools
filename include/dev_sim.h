@@ -70,11 +70,11 @@ private:
             f.data[5] = 0x40;
             break;
         case 4: // UI_autopilotControl (1021) mux 0 with "AD selected in UI"
-                // (byte4 bit5) -> HW3 handler enables + injects the speed profile
+                // (byte4 bit6) -> HW3 handler enables + injects the speed profile
             f.id = 1021;
             f.data[0] = 0x00;      // mux 0
             f.data[3] = (40 << 1); // arbitrary speed field
-            f.data[4] = 0x20;      // AD selected in UI
+            f.data[4] = 0x40;      // AD selected in UI
             break;
         case 5: // UI_autopilotControl (1021) mux 1: summon-control frame
             f.id = 1021;

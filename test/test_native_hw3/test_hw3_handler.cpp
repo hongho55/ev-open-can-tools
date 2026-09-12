@@ -76,7 +76,7 @@ void test_hw3_follow_distance_profile_survives_mux0_without_injection()
     mock.reset();
     CanFrame autopilotFrame = {.id = 1021};
     autopilotFrame.data[0] = 0x00; // mux 0
-    autopilotFrame.data[4] = 0x20; // AD selected
+    autopilotFrame.data[4] = 0x40; // AD selected
     autopilotFrame.data[3] = 60;   // speed offset = 0
     autopilotFrame.data[6] = 0x02;
     handler.handleMessage(autopilotFrame, mock);
@@ -93,7 +93,7 @@ void test_hw3_AD_enabled_only_set_on_mux0()
 {
     CanFrame f0 = {.id = 1021};
     f0.data[0] = 0x00; // mux 0
-    f0.data[4] = 0x20; // AD selected
+    f0.data[4] = 0x40; // AD selected
     handler.handleMessage(f0, mock);
     TEST_ASSERT_TRUE(handler.ADEnabled);
 
@@ -128,7 +128,7 @@ void test_hw3_AD_mux0_sends_with_bit46()
 {
     CanFrame f = {.id = 1021};
     f.data[0] = 0x00;
-    f.data[4] = 0x20;
+    f.data[4] = 0x40;
     handler.handleMessage(f, mock);
     TEST_ASSERT_EQUAL(1, mock.sent.size());
     TEST_ASSERT_EQUAL_HEX8(0x40, mock.sent[0].data[5] & 0x40);
@@ -141,7 +141,7 @@ void test_hw3_recorded_ap_mux0_enables_ad()
     f.data[1] = 0x00;
     f.data[2] = 0x00;
     f.data[3] = 0x40;
-    f.data[4] = 0x20;
+    f.data[4] = 0x40;
     f.data[5] = 0x01;
     f.data[6] = 0x01;
     f.data[7] = 0x80;
@@ -254,7 +254,7 @@ void test_hw3_AD_enabled_mux0_sends_exactly_1()
 {
     CanFrame f = {.id = 1021};
     f.data[0] = 0x00;
-    f.data[4] = 0x20;
+    f.data[4] = 0x40;
     handler.handleMessage(f, mock);
     TEST_ASSERT_EQUAL(1, mock.sent.size());
 }

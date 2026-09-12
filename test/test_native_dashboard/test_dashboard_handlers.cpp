@@ -32,6 +32,16 @@ void setUp()
 
 void tearDown() {}
 
+void test_fsd_selection_uses_byte4_bit6()
+{
+    bypassTlsscRequirementRuntime = false;
+    CanFrame frame = {};
+    frame.data[4] = 0x20;
+    TEST_ASSERT_FALSE(isADSelectedInUI(frame));
+    frame.data[4] = 0x40;
+    TEST_ASSERT_TRUE(isADSelectedInUI(frame));
+}
+
 void test_dashboard_legacy_mux0_observes_ad_without_injecting()
 {
     LegacyHandler handler;
@@ -39,7 +49,7 @@ void test_dashboard_legacy_mux0_observes_ad_without_injecting()
 
     CanFrame f = {.id = 1006};
     f.data[0] = 0x00;
-    f.data[4] = 0x20;
+    f.data[4] = 0x40;
 
     handler.handleMessage(f, mock);
 
@@ -59,7 +69,7 @@ void test_dashboard_legacy_manual_profile_injects_mux0()
 
     CanFrame f = {.id = 1006};
     f.data[0] = 0x00;
-    f.data[4] = 0x20;
+    f.data[4] = 0x40;
 
     handler.handleMessage(f, mock);
 
@@ -92,7 +102,7 @@ void test_dashboard_hw3_mux0_observes_state_without_injecting()
     CanFrame f = {.id = 1021};
     f.data[0] = 0x00;
     f.data[3] = 60;
-    f.data[4] = 0x20;
+    f.data[4] = 0x40;
 
     handler.handleMessage(f, mock);
 
@@ -113,7 +123,7 @@ void test_dashboard_hw3_manual_profile_injects_mux0()
 
     CanFrame f = {.id = 1021};
     f.data[0] = 0x00;
-    f.data[4] = 0x20;
+    f.data[4] = 0x40;
 
     handler.handleMessage(f, mock);
 
@@ -145,7 +155,7 @@ void test_dashboard_hw4_mux0_observes_ad_without_injecting()
 
     CanFrame f = {.id = 1021};
     f.data[0] = 0x00;
-    f.data[4] = 0x20;
+    f.data[4] = 0x40;
 
     handler.handleMessage(f, mock);
 
@@ -172,7 +182,7 @@ void test_dashboard_hw4_manual_profile_injects_mux2()
     handler.handleMessage(f, mock);
 
     TEST_ASSERT_EQUAL(1, mock.sent.size());
-    TEST_ASSERT_EQUAL_HEX8(0x40, mock.sent[0].data[7] & 0x70);
+    TEST_ASSERT_EQUAL_HEX8(0x80, mock.sent[0].data[7] & 0xE0);
 }
 
 void test_dashboard_hw4_mux1_does_not_inject_nag_suppression()
@@ -213,6 +223,7 @@ int main()
 {
     UNITY_BEGIN();
 
+    RUN_TEST(test_fsd_selection_uses_byte4_bit6);
     RUN_TEST(test_dashboard_legacy_mux0_observes_ad_without_injecting);
     RUN_TEST(test_dashboard_legacy_manual_profile_injects_mux0);
     RUN_TEST(test_dashboard_legacy_mux1_does_not_inject_nag_suppression);

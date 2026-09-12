@@ -1,6 +1,6 @@
 # ev-open-can-tools documentation
 
-[Project home](../) · [Start onboarding](../onboarding/) · [Build and flash](building.md) · [Dashboard](dashboard.md) · [Onboarding guide](onboarding.md) · [Plugins](plugins.md) · [CAN safety](nag-killer.md) · [Runtime optimization](esp32-optimization.md) · [Release notes](../CHANGELOG.md)
+[Project home](../) · [Start onboarding](../onboarding/) · [Build and flash](building.md) · [Dashboard](dashboard.md) · [Onboarding guide](onboarding.md) · [Plugins](plugins.md) · [CAN safety](nag-killer.md) · [Runtime optimization](esp32-optimization.md) · [Field maintenance design](vehicle-esp32-field-maintenance.md) · [Release notes](../CHANGELOG.md)
 
 ## Start here
 

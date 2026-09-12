@@ -95,6 +95,10 @@ struct CarManagerBase
     Shared<uint32_t> last1016Ms{0};
     Shared<uint32_t> last1021Ms{0};
     Shared<int> dasAutopilotStatus{-1};
+    // Explicit DAS signal-map selection. Unknown preserves the handler's
+    // hardware-mode default; dashboard builds may opt into a confirmed
+    // Highland byte-0 layout without enabling automatic inference.
+    Shared<uint8_t> dasLayoutOverride{static_cast<uint8_t>(Chassis::DasLayout::Unknown)};
     Shared<bool> summonPolicyDiSeen{false};
     Shared<bool> summonPolicySpeedSeen{false};
     Shared<bool> summonPolicyApSeen{false};
@@ -134,6 +138,16 @@ struct CarManagerBase
     bool (*checkSummon)() = nullptr;
     bool (*checkIsa)() = nullptr;
     bool (*checkEvd)() = nullptr;
+
+    void setDasLayout(Chassis::DasLayout layout)
+    {
+        dasLayoutOverride = static_cast<uint8_t>(layout);
+    }
+
+    Chassis::DasLayout dasLayout() const
+    {
+        return static_cast<Chassis::DasLayout>(static_cast<uint8_t>(dasLayoutOverride));
+    }
 
     void notifySpeedProfileChanged(int previous, uint32_t changedMs = 0)
     {
@@ -442,7 +456,10 @@ struct LegacyHandler : public CarManagerBase
         {
             if (frame.dlc < 1)
                 return;
-            uint8_t status = readDASAutopilotStatus(frame);
+            const Chassis::DasLayout layout = dasLayout();
+            uint8_t status = layout == Chassis::DasLayout::Unknown
+                ? readDASAutopilotStatus(frame)
+                : readDASAutopilotStatus(frame, layout);
             dasAutopilotStatus = status;
             APActive = isDASAutopilotActive(status);
             updateSummonPolicyAutopilot(frame, status);
@@ -588,7 +605,10 @@ struct HW3Handler : public CarManagerBase
         {
             if (frame.dlc < 1)
                 return;
-            uint8_t status = readDASAutopilotStatus(frame);
+            const Chassis::DasLayout layout = dasLayout();
+            uint8_t status = layout == Chassis::DasLayout::Unknown
+                ? readDASAutopilotStatus(frame)
+                : readDASAutopilotStatus(frame, layout);
             dasAutopilotStatus = status;
             APActive = isDASAutopilotActive(status);
             updateSummonPolicyAutopilot(frame, status);
@@ -752,7 +772,12 @@ struct NagHandler : public CarManagerBase
     {
         static constexpr uint32_t legacyIds[] = {kTargetId, kLegacyApStateId, kSteeringId};
         static constexpr uint32_t hw4Ids[] = {kTargetId, kHw4ApStateId, kSteeringId};
-        return static_cast<uint8_t>(nagHardwareMode) == 2 ? hw4Ids : legacyIds;
+        const Chassis::DasLayout layout = dasLayout();
+        const bool hw4 = layout == Chassis::DasLayout::StandardHw4 ||
+                         layout == Chassis::DasLayout::HighlandHw4Byte0 ||
+                         (layout == Chassis::DasLayout::Unknown &&
+                          static_cast<uint8_t>(nagHardwareMode) == 2);
+        return hw4 ? hw4Ids : legacyIds;
     }
 
     uint8_t modeFilterIdCount(uint8_t mode) const
@@ -782,7 +807,11 @@ struct NagHandler : public CarManagerBase
         if (selectedMode != activeMode_ || selectedHardwareMode != activeHardwareMode_)
             resetModeState(selectedMode, selectedHardwareMode, now);
 
-        if (frame.id == apStateId(selectedHardwareMode))
+        Chassis::DasLayout selectedLayout = dasLayout();
+        if (selectedLayout == Chassis::DasLayout::Unknown)
+            selectedLayout = selectedHardwareMode == 2 ? Chassis::DasLayout::StandardHw4
+                                                       : Chassis::DasLayout::LegacyHw3;
+        if (frame.id == apStateId(selectedLayout))
         {
             updateApState(frame, now);
             if (onFrame)
@@ -906,9 +935,12 @@ private:
         return clampNagTorqueRaw(static_cast<uint16_t>(scaled));
     }
 
-    static uint32_t apStateId(uint8_t hardwareMode)
+    static uint32_t apStateId(Chassis::DasLayout layout)
     {
-        return hardwareMode == 2 ? kHw4ApStateId : kLegacyApStateId;
+        return layout == Chassis::DasLayout::StandardHw4 ||
+                       layout == Chassis::DasLayout::HighlandHw4Byte0
+            ? kHw4ApStateId
+            : kLegacyApStateId;
     }
 
     void resetModeState(uint8_t mode, uint8_t hardwareMode, uint32_t now)
@@ -943,9 +975,11 @@ private:
     {
         if (frame.dlc < 6)
             return;
-        uint8_t apState = activeHardwareMode_ == 2
-            ? readHW4DASAutopilotStatus(frame)
-            : readDASAutopilotStatus(frame);
+        Chassis::DasLayout layout = dasLayout();
+        if (layout == Chassis::DasLayout::Unknown)
+            layout = activeHardwareMode_ == 2 ? Chassis::DasLayout::StandardHw4
+                                              : Chassis::DasLayout::LegacyHw3;
+        uint8_t apState = readDASAutopilotStatus(frame, layout);
         uint8_t handsOnState = readDASAutopilotHandsOnState(frame);
         apState_ = apState;
         lastApStateMs_ = now;
@@ -1105,7 +1139,10 @@ struct HW4Handler : public CarManagerBase
         {
             if (frame.dlc < 2)
                 return;
-            uint8_t status = readHW4DASAutopilotStatus(frame);
+            Chassis::DasLayout layout = dasLayout();
+            if (layout == Chassis::DasLayout::Unknown)
+                layout = Chassis::DasLayout::StandardHw4;
+            uint8_t status = readDASAutopilotStatus(frame, layout);
             dasAutopilotStatus = status;
             APActive = isDASAutopilotActive(status);
             updateSummonPolicyAutopilot(frame, status);

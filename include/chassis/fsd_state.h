@@ -21,9 +21,9 @@ public:
     bool observe(const CanFrame &frame, uint32_t nowMs)
     {
         if (!capability_.observe(frame, nowMs)) return false;
-        raw_ = layout_ == DasLayout::LegacyHw3
-            ? frame.data[kLegacyApByte] & kApStateMask
-            : (frame.data[kHw4ApByte] >> kHw4ApShift) & kApStateMask;
+        raw_ = layout_ == DasLayout::StandardHw4
+            ? (frame.data[kHw4ApByte] >> kHw4ApShift) & kApStateMask
+            : (frame.data[kLegacyApByte] & kApStateMask);
         observedMs_ = nowMs;
         return true;
     }

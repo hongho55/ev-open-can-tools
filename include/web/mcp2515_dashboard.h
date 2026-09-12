@@ -298,6 +298,8 @@ static constexpr size_t kDashIncidentListLimit = 16;
 static constexpr size_t kDashIncidentAckTombstoneLimit = 128;
 static bool dashCanSeen = false;
 static uint32_t dashCanLossGeneration = 0;
+static bool dashVehicleCanSeen = false;
+static uint32_t dashLastVehicleFrameMs = 0;
 #if defined(DRIVER_ESP32_EXT_MCP2515)
 static ESP32_MCP2515Driver *dashMcpDriver = nullptr;
 #endif
@@ -306,6 +308,9 @@ static unsigned long lastFrameMs = 0;
 static bool canOnline = false;
 
 static Shared<uint8_t> hwMode{DASH_DEFAULT_HW};
+// 0=Auto, 1=legacy 0x399 byte0, 2=standard HW4 0x39B byte1,
+// 3=explicit Highland 0x39B byte0. Never infer this from observed frames.
+static Shared<uint8_t> dashDasLayoutOverride{0};
 static Shared<bool> canActive{kDashInjectionDefaultEnabled};
 // Dev/test mode (simulated CAN traffic) — see app.h appDevSim / appDevModeActive.
 static Shared<bool> dashDevMode{kDashDevModeDefault};
@@ -504,6 +509,11 @@ static void mcpDashOnFrame(const CanFrame &f)
     lastFrameMs = now;
     canOnline = true;
     dashCanSeen = true;
+    if (telemetryAccepted && Chassis::isChassisBus(f.bus))
+    {
+        dashVehicleCanSeen = true;
+        dashLastVehicleFrameMs = now;
+    }
     if (dashWriteProbe.active && dashWriteProbe.state != kDashWriteProbeFailed && dashWriteProbeMatches(f))
     {
         dashWriteProbe.hasRx = true;
@@ -830,6 +840,42 @@ static bool dashStaSsidLooksCorrupt(const String &ssid)
     return false;
 }
 
+static Chassis::DasLayout dashEffectiveDasLayout()
+{
+    switch ((uint8_t)dashDasLayoutOverride)
+    {
+    case 1:
+        return Chassis::DasLayout::LegacyHw3;
+    case 2:
+        return Chassis::DasLayout::StandardHw4;
+    case 3:
+        return Chassis::DasLayout::HighlandHw4Byte0;
+    default:
+        return (uint8_t)hwMode == 2 ? Chassis::DasLayout::StandardHw4
+                                    : Chassis::DasLayout::LegacyHw3;
+    }
+}
+
+static const char *dashDasLayoutName(uint8_t value)
+{
+    switch (value)
+    {
+    case 1:
+        return "legacy_0x399_byte0";
+    case 2:
+        return "standard_hw4_0x39b_byte1";
+    case 3:
+        return "highland_0x39b_byte0";
+    default:
+        return "auto";
+    }
+}
+
+static uint8_t dashClampDasLayoutOverride(int value)
+{
+    return value >= 0 && value <= 3 ? static_cast<uint8_t>(value) : 0;
+}
+
 static uint8_t dashClampHw3SlewRate(int rate)
 {
     if (rate < kHw3SlewRateMin)
@@ -927,6 +973,10 @@ static void dashApplyRuntimeState(bool refreshLed)
     nagKillerRuntime = canActive && dashNagMode != static_cast<uint8_t>(NagMode::Disabled);
     dashNagHandler.setMode(dashNagMode);
     dashNagHandler.setHardwareMode(hwMode);
+    const Chassis::DasLayout dasLayout = dashEffectiveDasLayout();
+    dashTelemetry.setLayout(dasLayout);
+    if (dashHandler)
+        dashHandler->setDasLayout(dasLayout);
     summonOnlyInjectionRuntime = static_cast<bool>(summonOnlyInjection);
 
     if (dashHandler)
@@ -957,6 +1007,7 @@ static bool dashSavePrefs()
         return false;
     prefs.putUChar("hw", hwMode);
     prefs.putUChar("hw_def", DASH_DEFAULT_HW);
+    prefs.putUChar("das_layout", dashDasLayoutOverride);
     prefs.putBool("can", canActive);
     prefs.putBool("ap_gate", apInjectionGate);
     prefs.putBool("sum_only", summonOnlyInjection);
@@ -1210,6 +1261,10 @@ static void dashLoadPrefs()
         prefs.putUChar("hw", hwMode);
     if (storedDefaultHw != DASH_DEFAULT_HW)
         prefs.putUChar("hw_def", DASH_DEFAULT_HW);
+    uint8_t storedDasLayout = prefs.getUChar("das_layout", 0);
+    dashDasLayoutOverride = dashClampDasLayoutOverride(storedDasLayout);
+    if (storedDasLayout != dashDasLayoutOverride)
+        prefs.putUChar("das_layout", dashDasLayoutOverride);
     canActive = prefs.getBool("can", kDashInjectionDefaultEnabled);
     dashDevMode = prefs.getBool("dev_mode", kDashDevModeDefault);
     dashBleMode = prefs.getBool("ble_mode", false);
@@ -2439,7 +2494,8 @@ static void handleDiagnosticDetails()
     BoundedTextWriter json(response, sizeof(response));
     json.appendf("{\"bms\":{\"hvSeen\":%s,\"voltage\":%.2f,\"current\":%.1f,"
         "\"socSeen\":%s,\"soc\":%.1f,\"thermalSeen\":%s,\"minC\":%d,\"maxC\":%d},"
-        "\"das\":{\"seen\":%s,\"laneChange\":%u,\"sideWarning\":%u,\"forwardWarning\":%u,"
+        "\"das\":{\"seen\":%s,\"laneChange\":%u,\"sideWarning\":%u,\"sideCollisionAvoid\":%u,\"laneDepartureWarning\":%u,\"forwardWarning\":%u,"
+        "\"activationFailureSeen\":%s,\"activationFailure\":%u,\"autosteerSeen\":%s,\"autosteerEnabled\":%s,\"trackModeSeen\":%s,\"trackMode\":%u,\"tractionControl\":%u,"
         "\"limitSeen\":%s,\"limitKph\":%u},"
         "\"event\":{\"enabled\":%s,\"frozen\":%s,\"count\":%u,\"rawCount\":%u,\"stateCount\":%u,"
         "\"rawCapacity\":%u,\"stateCapacity\":%u,\"coverageMs\":%lu,\"stateCoverageMs\":%lu,"
@@ -2452,7 +2508,12 @@ static void handleDiagnosticDetails()
         t.bmsHvSeen ? "true" : "false", t.packVoltageV, t.packCurrentA,
         t.bmsSocSeen ? "true" : "false", t.socPercent,
         t.bmsThermalSeen ? "true" : "false", int(t.tempMinC), int(t.tempMaxC),
-        t.dasSeen ? "true" : "false", unsigned(t.laneChange), unsigned(t.sideWarning), unsigned(t.forwardWarning),
+        t.dasSeen ? "true" : "false", unsigned(t.laneChange), unsigned(t.sideWarning),
+        unsigned(t.sideCollisionAvoid), unsigned(t.laneDepartureWarning), unsigned(t.forwardWarning),
+        t.dasStatus2Seen ? "true" : "false", unsigned(t.activationFailureStatus),
+        t.dasSettingsSeen ? "true" : "false",
+        t.autosteerEnabled ? "true" : "false", t.diModesSeen ? "true" : "false",
+        unsigned(t.trackModeState), unsigned(t.tractionControlMode),
         t.visionLimitSeen ? "true" : "false", unsigned(t.visionLimitKph),
         enabled ? "true" : "false", frozen ? "true" : "false", unsigned(count), unsigned(rawCount),
         unsigned(stateCount), unsigned(rawCapacity), unsigned(stateCapacity),
@@ -2900,6 +2961,8 @@ static void handleStatus()
 {
     unsigned long now = 0;
     bool canOnlineSnapshot = false;
+    bool hardwareReadySnapshot = false;
+    bool vehicleOnlineSnapshot = false;
     DashWriteProbe writeProbeSnapshot = {};
     Chassis::TelemetrySnapshot telemetrySnapshot = {};
     bool recorderArmed = false, recorderFrozen = false, recorderUsingPsram = false;
@@ -2918,6 +2981,9 @@ static void handleStatus()
         if (canOnline && Chassis::EventRecorder::postDeadlineReached(now, lastFrameMs))
             canOnline = false;
         canOnlineSnapshot = canOnline;
+        hardwareReadySnapshot = dashDriver && dashDriver->ready();
+        vehicleOnlineSnapshot = dashVehicleCanSeen &&
+                                !Chassis::EventRecorder::postDeadlineReached(now, dashLastVehicleFrameMs);
         writeProbeSnapshot = dashWriteProbe;
         telemetrySnapshot = dashTelemetry.snapshot(now);
         recorderArmed = dashRecorder.enabled();
@@ -2954,10 +3020,13 @@ static void handleStatus()
     const DashApGateSnapshot apGate = dashApGateSnapshot();
     char response[4096];
     BoundedTextWriter json(response, sizeof(response));
-    json.appendf("{\"can\":%s,\"ia\":%s,\"ready\":%s",
+    json.appendf("{\"can\":%s,\"ia\":%s,\"ready\":%s,\"hardwareReady\":%s,\"trafficSeen\":%s,\"vehicleOnline\":%s",
                  canOnlineSnapshot ? "true" : "false",
                  injectionActive ? "true" : "false",
-                 appInjectionReady() ? "true" : "false");
+                 appInjectionReady() ? "true" : "false",
+                 hardwareReadySnapshot ? "true" : "false",
+                 canOnlineSnapshot ? "true" : "false",
+                 vehicleOnlineSnapshot ? "true" : "false");
     json.appendf(
         ",\"apGate\":{\"enabled\":%s,\"allowed\":%s,\"ap\":%s,\"parked\":%s,"
         "\"summoning\":%s,\"stableMs\":%lu,\"reason\":\"%s\"}",
@@ -2984,8 +3053,10 @@ static void handleStatus()
         "\"gear\":{\"seen\":%s,\"value\":%u,\"autonomy\":%s,\"ageMs\":%lu},"
         "\"steering\":{\"seen\":%s,\"deg\":%.2f,\"ageMs\":%lu},"
         "\"brake\":{\"seen\":%s,\"applied\":%s,\"ageMs\":%lu},"
-        "\"das\":{\"seen\":%s,\"ap\":%u,\"handsOn\":%u,\"ageMs\":%lu},"
-        "\"acc\":{\"seen\":%s,\"report\":%u,\"ageMs\":%lu},"
+        "\"das\":{\"seen\":%s,\"ap\":%u,\"handsOn\":%u,\"ageMs\":%lu,\"sideCollisionAvoid\":%u,\"laneDepartureWarning\":%u},"
+        "\"acc\":{\"seen\":%s,\"report\":%u,\"activationFailure\":%u,\"ageMs\":%lu},"
+        "\"dasSettings\":{\"seen\":%s,\"autosteerEnabled\":%s,\"ageMs\":%lu},"
+        "\"diModes\":{\"seen\":%s,\"track\":%u,\"traction\":%u,\"ageMs\":%lu},"
         "\"presence\":{\"apLegacy\":%s,\"apControl\":%s,\"dasSteering\":%s,\"map\":%s},"
         "\"party\":{\"bmsHv\":%s,\"bmsSoc\":%s,\"bmsThermal\":%s,\"energy\":%s,\"torque\":%s,\"diState\":%s,\"warning\":%s},"
         "\"tier\":{\"seen\":%s,\"value\":%u,\"ageMs\":%lu}}",
@@ -3008,9 +3079,19 @@ static void handleStatus()
         static_cast<unsigned int>(telemetrySnapshot.apState),
         static_cast<unsigned int>(telemetrySnapshot.handsOn),
         telemetrySnapshot.dasSeen ? now - telemetrySnapshot.dasMs : 0UL,
+        static_cast<unsigned int>(telemetrySnapshot.sideCollisionAvoid),
+        static_cast<unsigned int>(telemetrySnapshot.laneDepartureWarning),
         telemetrySnapshot.dasStatus2Seen ? "true" : "false",
         static_cast<unsigned int>(telemetrySnapshot.accReport),
+        static_cast<unsigned int>(telemetrySnapshot.activationFailureStatus),
         telemetrySnapshot.dasStatus2Seen ? now - telemetrySnapshot.dasStatus2Ms : 0UL,
+        telemetrySnapshot.dasSettingsSeen ? "true" : "false",
+        telemetrySnapshot.autosteerEnabled ? "true" : "false",
+        telemetrySnapshot.dasSettingsSeen ? now - telemetrySnapshot.dasSettingsMs : 0UL,
+        telemetrySnapshot.diModesSeen ? "true" : "false",
+        static_cast<unsigned int>(telemetrySnapshot.trackModeState),
+        static_cast<unsigned int>(telemetrySnapshot.tractionControlMode),
+        telemetrySnapshot.diModesSeen ? now - telemetrySnapshot.diModesMs : 0UL,
         telemetrySnapshot.apLegacySeen ? "true" : "false",
         telemetrySnapshot.apControlSeen ? "true" : "false",
         telemetrySnapshot.dasSteeringSeen ? "true" : "false",
@@ -3485,6 +3566,8 @@ static String ctrlBuildConfigJson()
 {
     CarManagerBase *handler = dashHandler;
     String json = "{\"hw\":" + String(hwMode);
+    json += ",\"dasLayout\":" + String(dashDasLayoutOverride);
+    json += ",\"dasLayoutName\":\"" + String(dashDasLayoutName(dashDasLayoutOverride)) + "\"";
     json += ",\"speedProfile\":" + String(handler ? (int)handler->speedProfile : (int)dashManualSpeedProfile);
     json += ",\"speedAuto\":" + String(dashSpeedProfileAuto ? "true" : "false");
     json += ",\"injectionArmed\":" + String(canActive ? "true" : "false");
@@ -3508,6 +3591,7 @@ static void handleConfigGet()
 static ConfigResult ctrlApplyConfig(const ConfigArgs &args)
 {
     long hwValue = hwMode;
+    long dasLayoutValue = dashDasLayoutOverride;
     long speedValue = dashManualSpeedProfile;
     long replayValue = pluginGetReplayCount();
     long nagModeValue = dashNagMode;
@@ -3522,6 +3606,9 @@ static ConfigResult ctrlApplyConfig(const ConfigArgs &args)
     bool valid = true;
     if (args.has("hw"))
         valid &= dashParseLong(args.get("hw"), hwValue) && hwValue >= 0 && hwValue <= 2;
+    if (args.has("dasLayout"))
+        valid &= dashParseLong(args.get("dasLayout"), dasLayoutValue) &&
+                 dasLayoutValue >= 0 && dasLayoutValue <= 3;
     if (args.has("sp"))
         valid &= dashParseLong(args.get("sp"), speedValue) && speedValue >= 0 &&
                  speedValue <= (hwValue == 2 ? 4 : 2);
@@ -3559,6 +3646,7 @@ static ConfigResult ctrlApplyConfig(const ConfigArgs &args)
 
     AppHandlerGuard appGuard;
     uint8_t oldHw = hwMode;
+    uint8_t oldDasLayout = dashDasLayoutOverride;
     bool oldCan = canActive;
     bool oldSpeedAuto = dashSpeedProfileAuto;
     uint8_t oldSpeed = dashManualSpeedProfile;
@@ -3600,6 +3688,8 @@ static ConfigResult ctrlApplyConfig(const ConfigArgs &args)
                 hwChanged = true;
             }
         }
+        if (args.has("dasLayout"))
+            dashDasLayoutOverride = dashClampDasLayoutOverride(static_cast<int>(dasLayoutValue));
         if (args.has("can"))
             canActive = canValue;
         bool profileAutoRequested = args.has("spa") && speedAutoValue;
@@ -3734,6 +3824,7 @@ static ConfigResult ctrlApplyConfig(const ConfigArgs &args)
             DashDataGuard dataGuard;
             DashRecorderConfigUpdate recorderUpdate(dashRecorder);
             hwMode = oldHw;
+            dashDasLayoutOverride = oldDasLayout;
             canActive = oldCan;
             dashSpeedProfileAuto = oldSpeedAuto;
             dashManualSpeedProfile = oldSpeed;

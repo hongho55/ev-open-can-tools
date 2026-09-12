@@ -24,7 +24,7 @@ void test_whitelist_excludes_party_and_unknown_ids()
     ChassisTelemetry telemetry(DasLayout::LegacyHw3, 100);
     const uint32_t ids[] = {
         kDiSystemStatusId, kSteeringAngleId, kEspStatusId, kUiMapDataId,
-        kDasControlId, kDasStatus2Id, kApLegacyId, kApControlId,
+        kDasControlId, kDasStatus2Id, kDasSettingsId, kApLegacyId, kApControlId,
         kDasSteeringId,
     };
     for (uint32_t id : ids)
@@ -33,7 +33,7 @@ void test_whitelist_excludes_party_and_unknown_ids()
     TEST_ASSERT_FALSE(telemetry.observe(frame(0x370), 2));
     TEST_ASSERT_FALSE(telemetry.observe(frame(0x123), 2));
     TEST_ASSERT_FALSE(telemetry.observe(frame(0x80000129u), 2));
-    TEST_ASSERT_EQUAL_UINT32(9, telemetry.acceptedFrames());
+    TEST_ASSERT_EQUAL_UINT32(10, telemetry.acceptedFrames());
 }
 
 void test_only_chassis_bus_labels_are_accepted()
@@ -89,6 +89,7 @@ void test_unknown_or_short_dlc_is_rejected()
     TEST_ASSERT_FALSE(telemetry.observe(frame(kUiMapDataId, 1), 1));
     TEST_ASSERT_FALSE(telemetry.observe(frame(kDasControlId, 2), 1));
     TEST_ASSERT_FALSE(telemetry.observe(frame(kDasStatus2Id, 4), 1));
+    TEST_ASSERT_FALSE(telemetry.observe(frame(kDasSettingsId, 4), 1));
     TEST_ASSERT_FALSE(telemetry.observe(frame(kDasSteeringId, 2), 1));
     TEST_ASSERT_FALSE(telemetry.observe(frame(kApControlId, 7), 1));
 
@@ -124,11 +125,29 @@ void test_decoder_fields_match_flipper_layouts()
 
     auto dasStatus2 = frame(kDasStatus2Id, 5);
     dasStatus2.data[0] = 0x1F; // unrelated low byte
+    dasStatus2.data[1] = 0x40; // activationFailureStatus = 1
     dasStatus2.data[3] = 0x14; // DAS_ACC_report = 5
     TEST_ASSERT_TRUE(telemetry.observe(dasStatus2, 4));
     snapshot = telemetry.snapshot(4);
     TEST_ASSERT_TRUE(snapshot.dasStatus2Seen);
     TEST_ASSERT_EQUAL_UINT8(5, snapshot.accReport);
+    TEST_ASSERT_EQUAL_UINT8(1, snapshot.activationFailureStatus);
+
+    auto dasSettings = frame(kDasSettingsId, 5);
+    dasSettings.data[4] = 0x40; // DAS_autosteerEnabled = 1
+    TEST_ASSERT_TRUE(telemetry.observe(dasSettings, 5));
+    snapshot = telemetry.snapshot(5);
+    TEST_ASSERT_TRUE(snapshot.dasSettingsSeen);
+    TEST_ASSERT_TRUE(snapshot.autosteerEnabled);
+
+    auto di = frame(kDiSystemStatusId, 7);
+    di.data[kDiTrackModeByte] = 0x02;
+    di.data[kDiTractionControlByte] = 0x05;
+    TEST_ASSERT_TRUE(telemetry.observe(di, 6));
+    snapshot = telemetry.snapshot(6);
+    TEST_ASSERT_TRUE(snapshot.diModesSeen);
+    TEST_ASSERT_EQUAL_UINT8(2, snapshot.trackModeState);
+    TEST_ASSERT_EQUAL_UINT8(5, snapshot.tractionControlMode);
 }
 
 void test_hw4_ap_state_uses_byte1_high_nibble()
@@ -141,6 +160,18 @@ void test_hw4_ap_state_uses_byte1_high_nibble()
     auto snapshot = telemetry.snapshot(1);
     TEST_ASSERT_TRUE(snapshot.dasSeen);
     TEST_ASSERT_EQUAL_UINT8(3, snapshot.apState);
+}
+
+void test_highland_layout_is_explicit_byte0_opt_in()
+{
+    Chassis::TelemetryState telemetry(DasLayout::HighlandHw4Byte0, 100);
+    auto das = frame(kDasHw4Id, 8);
+    das.data[0] = 0x06; // explicit Highland byte-0 state
+    das.data[1] = 0x00; // standard byte-1 field must not win
+    TEST_ASSERT_TRUE(telemetry.observe(das, 1));
+    auto snapshot = telemetry.snapshot(1);
+    TEST_ASSERT_TRUE(snapshot.dasSeen);
+    TEST_ASSERT_EQUAL_UINT8(6, snapshot.apState);
 }
 
 void test_samples_expire_wrap_safely_and_reset()
@@ -180,6 +211,7 @@ int main()
     RUN_TEST(test_unknown_or_short_dlc_is_rejected);
     RUN_TEST(test_decoder_fields_match_flipper_layouts);
     RUN_TEST(test_hw4_ap_state_uses_byte1_high_nibble);
+    RUN_TEST(test_highland_layout_is_explicit_byte0_opt_in);
     RUN_TEST(test_samples_expire_wrap_safely_and_reset);
     RUN_TEST(test_invalid_timeout_never_reports_live);
     return UNITY_END();

@@ -78,7 +78,8 @@ inline bool isADSelectedInUI(const CanFrame &frame)
 {
     if (bypassTlsscRequirementRuntime)
         return true;
-    return (frame.data[4] >> 5) & 0x01;
+    // DAS_autopilotControl FSD-selected flag is byte 4 bit 6.
+    return (frame.data[4] >> 6) & 0x01;
 }
 
 inline uint8_t readGTWAutopilot(const CanFrame &frame)
@@ -89,6 +90,21 @@ inline uint8_t readGTWAutopilot(const CanFrame &frame)
 inline uint8_t readDASAutopilotStatus(const CanFrame &frame)
 {
     return frame.data[0] & 0x0F;
+}
+
+inline uint8_t readDASAutopilotStatus(const CanFrame &frame, Chassis::DasLayout layout)
+{
+    switch (layout)
+    {
+    case Chassis::DasLayout::LegacyHw3:
+    case Chassis::DasLayout::HighlandHw4Byte0:
+        return frame.data[Chassis::kLegacyApByte] & Chassis::kApStateMask;
+    case Chassis::DasLayout::StandardHw4:
+        return static_cast<uint8_t>((frame.data[Chassis::kHw4ApByte] >>
+                                     Chassis::kHw4ApShift) & Chassis::kApStateMask);
+    default:
+        return 0;
+    }
 }
 
 inline bool isDASAutopilotActive(uint8_t status)
@@ -129,6 +145,13 @@ inline uint8_t readDASStatus2AccReport(const CanFrame &frame)
     return static_cast<uint8_t>((frame.data[Chassis::kDasStatus2AccReportByte] >>
                                  Chassis::kDasStatus2AccReportShift) &
                                 Chassis::kDasStatus2AccReportMask);
+}
+
+inline uint8_t readDASStatus2ActivationFailure(const CanFrame &frame)
+{
+    return static_cast<uint8_t>((frame.data[Chassis::kDasStatus2ActivationFailureByte] >>
+                                 Chassis::kDasStatus2ActivationFailureShift) &
+                                Chassis::kDasStatus2ActivationFailureMask);
 }
 
 inline uint8_t readDASAutopilotHandsOnState(const CanFrame &frame)
@@ -220,8 +243,9 @@ inline void setSpeedProfileV12V13(CanFrame &frame, int profile)
 
 inline void setSpeedProfileHW4(CanFrame &frame, int profile)
 {
-    frame.data[7] &= static_cast<uint8_t>(~0x70);
-    frame.data[7] |= static_cast<uint8_t>((profile & 0x07) << 4);
+    // HW4 0x3FD mux=2 uses byte 7 bits 5..7 (not bits 4..6).
+    frame.data[7] &= static_cast<uint8_t>(~0xE0);
+    frame.data[7] |= static_cast<uint8_t>((profile & 0x07) << 5);
 }
 
 inline uint8_t computeVehicleChecksum(const CanFrame &frame, uint8_t checksumByteIndex = 7)

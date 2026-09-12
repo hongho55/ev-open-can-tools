@@ -91,14 +91,14 @@ void test_readMuxID_max_value()
 
 // --- isADSelectedInUI ---
 
-void test_isADSelectedInUI_true_when_bit5_set()
+void test_isADSelectedInUI_true_when_bit6_set()
 {
     CanFrame f = {};
-    f.data[4] = 0x20; // bit 5 set
+    f.data[4] = 0x40; // bit 6 set
     TEST_ASSERT_TRUE(isADSelectedInUI(f));
 }
 
-void test_isADSelectedInUI_false_when_bit5_clear()
+void test_isADSelectedInUI_false_when_bit6_clear()
 {
     CanFrame f = {};
     f.data[4] = 0x00;
@@ -108,7 +108,7 @@ void test_isADSelectedInUI_false_when_bit5_clear()
 void test_isADSelectedInUI_ignores_other_bits()
 {
     CanFrame f = {};
-    f.data[4] = 0xDF; // all bits set except bit 5
+    f.data[4] = 0xBF; // all bits set except bit 6
     TEST_ASSERT_FALSE(isADSelectedInUI(f));
 }
 
@@ -354,7 +354,7 @@ void test_runtime_bypass_tlssc_off_still_reads_real_bit()
 {
     bypassTlsscRequirementRuntime = false;
     CanFrame f = {};
-    f.data[4] = 0x20;
+    f.data[4] = 0x40;
     TEST_ASSERT_TRUE(isADSelectedInUI(f));
 }
 
@@ -382,8 +382,8 @@ int main()
     RUN_TEST(test_readMuxID_zero);
     RUN_TEST(test_readMuxID_max_value);
 
-    RUN_TEST(test_isADSelectedInUI_true_when_bit5_set);
-    RUN_TEST(test_isADSelectedInUI_false_when_bit5_clear);
+    RUN_TEST(test_isADSelectedInUI_true_when_bit6_set);
+    RUN_TEST(test_isADSelectedInUI_false_when_bit6_clear);
     RUN_TEST(test_isADSelectedInUI_ignores_other_bits);
     RUN_TEST(test_isADSelectedInUI_true_with_other_bits);
     RUN_TEST(test_readGTWAutopilot_extracts_bits_42_to_44);

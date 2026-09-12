@@ -72,7 +72,7 @@ void test_frames_are_meaningful()
         }
         if (f.id == 1021 && (f.data[0] & 0x07) == 0)
         {
-            TEST_ASSERT_EQUAL_UINT8(1, (f.data[4] >> 5) & 0x01); // AD selected
+            TEST_ASSERT_EQUAL_UINT8(1, (f.data[4] >> 6) & 0x01); // AD selected
             checkedInject = true;
         }
     }

@@ -37,7 +37,8 @@ struct TelemetrySnapshot
     uint8_t apState = 0;
     uint8_t handsOn = 0;
     uint32_t dasMs = 0;
-    uint8_t laneChange = 0, sideWarning = 0, forwardWarning = 0;
+    uint8_t laneChange = 0, sideWarning = 0, sideCollisionAvoid = 0;
+    uint8_t laneDepartureWarning = 0, forwardWarning = 0;
     bool visionLimitSeen = false;
     uint16_t visionLimitKph = 0;
 
@@ -45,11 +46,21 @@ struct TelemetrySnapshot
     // Last decoded ACC value for the existing aggregate dashboard field. Use
     // dasControlSeen/accState to distinguish DAS_control from DAS_status2.
     uint8_t accReport = 0;
+    uint8_t activationFailureStatus = 0;
     uint32_t dasStatus2Ms = 0;
 
     bool dasControlSeen = false;
     uint8_t accState = 0;
     uint32_t dasControlMs = 0;
+
+    bool dasSettingsSeen = false;
+    bool autosteerEnabled = false;
+    uint32_t dasSettingsMs = 0;
+
+    bool diModesSeen = false;
+    uint8_t trackModeState = 0;
+    uint8_t tractionControlMode = 0;
+    uint32_t diModesMs = 0;
 
     bool apLegacySeen = false;
     bool apControlSeen = false;
@@ -114,6 +125,9 @@ public:
                                    snapshot_.dasStatus2Ms, nowMs);
         out.dasControlSeen = fresh(snapshot_.dasControlSeen,
                                    snapshot_.dasControlMs, nowMs);
+        out.dasSettingsSeen = fresh(snapshot_.dasSettingsSeen,
+                                    snapshot_.dasSettingsMs, nowMs);
+        out.diModesSeen = fresh(snapshot_.diModesSeen, snapshot_.diModesMs, nowMs);
         out.apLegacySeen = fresh(snapshot_.apLegacySeen, snapshot_.apLegacyMs, nowMs);
         out.apControlSeen = fresh(snapshot_.apControlSeen, snapshot_.apControlMs, nowMs);
         out.dasSteeringSeen = fresh(snapshot_.dasSteeringSeen, snapshot_.dasSteeringMs, nowMs);
@@ -173,6 +187,10 @@ private:
             snapshot_.gearSeen = true;
             snapshot_.gear = static_cast<uint8_t>((frame.data[2] >> 5) & 0x07);
             snapshot_.autonomyActive = (frame.data[6] & 0x04) != 0;
+            snapshot_.trackModeState = frame.data[kDiTrackModeByte] & kDiTrackModeMask;
+            snapshot_.tractionControlMode = frame.data[kDiTractionControlByte] & kDiTractionControlMask;
+            snapshot_.diModesSeen = true;
+            snapshot_.diModesMs = nowMs;
             snapshot_.gearMs = nowMs;
             break;
         case 0x129: // SCCM_steeringAngleSensor
@@ -218,7 +236,16 @@ private:
             if (!hasDlc(frame, 5)) return false;
             snapshot_.dasStatus2Seen = true;
             snapshot_.accReport = readDASStatus2AccReport(frame);
+            snapshot_.activationFailureStatus = readDASStatus2ActivationFailure(frame);
             snapshot_.dasStatus2Ms = nowMs;
+            break;
+        case 0x293: // DAS_settings: DAS_autosteerEnabled, bit 38|1
+            if (!hasDlc(frame, 5)) return false;
+            snapshot_.dasSettingsSeen = true;
+            snapshot_.autosteerEnabled =
+                ((frame.data[kDasSettingsAutosteerByte] >> kDasSettingsAutosteerShift) &
+                 kDasSettingsAutosteerMask) != 0;
+            snapshot_.dasSettingsMs = nowMs;
             break;
         case 0x399: // Legacy/HW3 DAS layout only
             if (layout_ != DasLayout::LegacyHw3 || frame.dlc != 8) return false;
@@ -228,10 +255,11 @@ private:
             decodeDas(frame);
             snapshot_.dasMs = nowMs;
             break;
-        case 0x39B: // Standard HW4 DAS layout only
-            if (layout_ != DasLayout::StandardHw4 || frame.dlc != 8) return false;
+        case 0x39B: // Standard or explicitly selected Highland byte-0 DAS layout
+            if ((layout_ != DasLayout::StandardHw4 &&
+                 layout_ != DasLayout::HighlandHw4Byte0) || frame.dlc != 8) return false;
             snapshot_.dasSeen = true;
-            snapshot_.apState = readHW4DASAutopilotStatus(frame);
+            snapshot_.apState = readDASAutopilotStatus(frame, layout_);
             snapshot_.handsOn = (frame.data[5] >> 2) & 0x0F;
             decodeDas(frame);
             snapshot_.dasMs = nowMs;
@@ -270,6 +298,12 @@ private:
     {
         snapshot_.laneChange = ((frame.data[5] >> 6) & 3) | ((frame.data[6] & 7) << 2);
         snapshot_.sideWarning = frame.data[4] & 3;
+        snapshot_.sideCollisionAvoid =
+            (frame.data[kDasSideCollisionAvoidByte] >> kDasSideCollisionAvoidShift) &
+            kDasSideCollisionAvoidMask;
+        snapshot_.laneDepartureWarning =
+            (frame.data[kDasLaneDepartureByte] >> kDasLaneDepartureShift) &
+            kDasLaneDepartureMask;
         snapshot_.forwardWarning = (frame.data[2] >> 6) & 3;
         const uint8_t limit = frame.data[2] & 31;
         snapshot_.visionLimitSeen = limit != 0 && limit != 31;

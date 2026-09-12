@@ -7,6 +7,7 @@ namespace Chassis
 // Evidence: Flipper fsd_capability.h and esp32/.firmware/can_signals.h.
 constexpr uint32_t kDasLegacyHw3Id = 0x399;
 constexpr uint32_t kDasHw4Id = 0x39B;
+constexpr uint32_t kDasSettingsId = 0x293;
 constexpr uint8_t kApStateMask = 0x0F;
 constexpr uint8_t kLegacyApByte = 0;
 constexpr uint8_t kHw4ApByte = 1;
@@ -23,10 +24,34 @@ constexpr uint8_t kDasControlAccStateMask = 0x0F;
 constexpr uint8_t kDasStatus2AccReportByte = 3;
 constexpr uint8_t kDasStatus2AccReportShift = 2;
 constexpr uint8_t kDasStatus2AccReportMask = 0x1F;
+constexpr uint8_t kDasStatus2ActivationFailureByte = 1;
+constexpr uint8_t kDasStatus2ActivationFailureShift = 6;
+constexpr uint8_t kDasStatus2ActivationFailureMask = 0x03;
+
+// Flipper receive-only extras.
+constexpr uint8_t kDiTrackModeByte = 6;
+constexpr uint8_t kDiTrackModeMask = 0x03;
+constexpr uint8_t kDiTractionControlByte = 5;
+constexpr uint8_t kDiTractionControlMask = 0x07;
+constexpr uint8_t kDasSettingsAutosteerByte = 4;
+constexpr uint8_t kDasSettingsAutosteerShift = 6;
+constexpr uint8_t kDasSettingsAutosteerMask = 0x01;
+constexpr uint8_t kDasLaneDepartureByte = 4;
+constexpr uint8_t kDasLaneDepartureShift = 5;
+constexpr uint8_t kDasLaneDepartureMask = 0x07;
+constexpr uint8_t kDasSideCollisionAvoidByte = 3;
+constexpr uint8_t kDasSideCollisionAvoidShift = 6;
+constexpr uint8_t kDasSideCollisionAvoidMask = 0x03;
 
 // Caller must explicitly confirm the layout; hardware/IDs alone are insufficient.
-// Highland byte0 variants and automatic layout inference are deliberately omitted.
-enum class DasLayout : uint8_t { Unknown, LegacyHw3, StandardHw4 };
+// Highland byte0 support is opt-in; automatic layout inference remains omitted.
+enum class DasLayout : uint8_t
+{
+    Unknown,
+    LegacyHw3,
+    StandardHw4,
+    HighlandHw4Byte0,
+};
 
 inline bool isChassisBus(uint8_t bus)
 {
@@ -44,7 +69,9 @@ inline bool matchesDas(const CanFrame &frame, DasLayout layout)
     switch (layout)
     {
     case DasLayout::LegacyHw3: return frame.id == kDasLegacyHw3Id;
-    case DasLayout::StandardHw4: return frame.id == kDasHw4Id;
+    case DasLayout::StandardHw4:
+    case DasLayout::HighlandHw4Byte0:
+        return frame.id == kDasHw4Id;
     default: return false;
     }
 }
