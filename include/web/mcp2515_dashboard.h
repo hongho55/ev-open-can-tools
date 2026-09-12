@@ -21,7 +21,11 @@
 #ifdef ESP_PLATFORM
 #include <esp_mac.h>
 #include <freertos/semphr.h>
+#include <fcntl.h>
+#include <lwip/inet.h>
+#include <lwip/sockets.h>
 #include <psa/crypto.h>
+#include <unistd.h>
 #endif
 #ifndef ESP_PLATFORM
 #include <Preferences.h>
@@ -358,6 +362,17 @@ static constexpr size_t kDashMinApPassLen = 8;
 static constexpr size_t kDashMaxPassLen = 63;
 static constexpr int kDashApChannel = 1;
 static constexpr int kDashApMaxConn = 4;
+
+#ifdef ESP_PLATFORM
+// Small, unauthenticated local discovery only. The response contains no
+// credentials, addresses, CAN data, or control capability. The actual
+// read-only HTTP endpoints remain authenticated.
+static constexpr uint16_t kDashDiscoveryPort = 36991;
+static constexpr char kDashDiscoveryRequest[] = "T2CAN_DISCOVER_V1";
+static constexpr char kDashDiscoveryResponse[] =
+    "{\"schema\":\"t2can-discovery-v1\",\"service\":\"EVCANTool\",\"port\":80,\"readOnly\":true}\n";
+static int dashDiscoverySocket = -1;
+#endif
 
 // WiFi STA (client) mode for internet access
 static char staSSID[33] = "";
@@ -4522,6 +4537,85 @@ static void dashPrepareStaReconnect()
     autoUpdateEligibleAt = 0;
 }
 
+#ifdef ESP_PLATFORM
+static void dashStopDiscovery()
+{
+    if (dashDiscoverySocket >= 0)
+    {
+        close(dashDiscoverySocket);
+        dashDiscoverySocket = -1;
+    }
+}
+
+static void dashStartDiscovery()
+{
+    if (dashBleMode || dashDiscoverySocket >= 0)
+        return;
+    const int socketFd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (socketFd < 0)
+    {
+        dashLog("[DISCOVERY] UDP socket creation failed");
+        return;
+    }
+    int reuse = 1;
+    if (setsockopt(socketFd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) != 0)
+    {
+        close(socketFd);
+        dashLog("[DISCOVERY] UDP socket option failed");
+        return;
+    }
+    sockaddr_in address = {};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(kDashDiscoveryPort);
+    address.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(socketFd, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) != 0)
+    {
+        close(socketFd);
+        dashLog("[DISCOVERY] UDP bind failed");
+        return;
+    }
+    const int flags = fcntl(socketFd, F_GETFL, 0);
+    if (flags < 0 || fcntl(socketFd, F_SETFL, flags | O_NONBLOCK) != 0)
+    {
+        close(socketFd);
+        dashLog("[DISCOVERY] UDP non-blocking setup failed");
+        return;
+    }
+    dashDiscoverySocket = socketFd;
+    dashLog("[DISCOVERY] UDP listener ready");
+}
+
+static void dashDiscoveryTick()
+{
+    if (dashDiscoverySocket < 0)
+        return;
+    for (int attempt = 0; attempt < 4; ++attempt)
+    {
+        char request[sizeof(kDashDiscoveryRequest)] = {};
+        sockaddr_in peer = {};
+        socklen_t peerLength = sizeof(peer);
+        const int received = recvfrom(dashDiscoverySocket, request, sizeof(request), 0,
+                                      reinterpret_cast<sockaddr *>(&peer), &peerLength);
+        if (received < 0)
+        {
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                return;
+            dashStopDiscovery();
+            return;
+        }
+        if (received != static_cast<int>(strlen(kDashDiscoveryRequest)) ||
+            memcmp(request, kDashDiscoveryRequest, strlen(kDashDiscoveryRequest)) != 0)
+            continue;
+        (void)sendto(dashDiscoverySocket, kDashDiscoveryResponse,
+                     strlen(kDashDiscoveryResponse), 0,
+                     reinterpret_cast<const sockaddr *>(&peer), peerLength);
+    }
+}
+#else
+static void dashStartDiscovery() {}
+static void dashDiscoveryTick() {}
+#endif
+
 static void dashApplyWifiSlot(uint8_t slot)
 {
     DashWifiGuard guard;
@@ -6186,6 +6280,7 @@ static void webTask(void *)
             ArduinoOTA.handle();
             server.handleClient();
 #endif
+            dashDiscoveryTick();
             dashCheckWifi();
             dashEventTick();
         }
@@ -6449,6 +6544,7 @@ static void mcpDashboardSetup(CarManagerBase *handler, CanDriver *driver)
     server.on("/auto_update", HTTP_POST, handleAutoUpdate);
 
     server.begin();
+    dashStartDiscovery();
     if (!server.started())
         dashLog("[ERR] Dashboard HTTP server failed to start");
     if (strlen(staSSID) > 0)

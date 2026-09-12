@@ -20,6 +20,24 @@ Hermes / optional redacted Oracle review
 
 The Mac mini cannot normally reach the ESP32 while it is installed in the vehicle. The S26 is therefore the practical field gateway. The S26 should not be a live relay: it downloads a completed incident, stores it durably, and uploads it later when normal Internet connectivity is available.
 
+## Local automatic discovery
+
+When Wi-Fi mode is active, the firmware opens a non-blocking UDP listener on
+port `36991`. An S26 worker broadcasts the exact ASCII request
+`T2CAN_DISCOVER_V1` on the current hotspot network. EVCANTool answers with the
+versioned response below; the sender address is the ESP32 HTTP address for
+the next authenticated request:
+
+```json
+{"schema":"t2can-discovery-v1","service":"EVCANTool","port":80,"readOnly":true}
+```
+
+The discovery response contains no CAN payload, credential, MAC address, or
+control endpoint. The listener is bounded to four packets per worker tick and
+uses non-blocking I/O so it cannot delay CAN/web maintenance work. The S26
+must still perform an authenticated `/status` or `/event_list` handshake
+before trusting the peer.
+
 ## What is implemented now
 
 `scripts/collect_vehicle_incidents.py` is a one-shot reference client for the local ESP32 evidence protocol. It exercises the same critical path that the future S26 worker must implement:
