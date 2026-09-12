@@ -12,7 +12,9 @@
 //   Response  e7c10003-...  NOTIFY      device -> app, newline-framed JSON
 //
 // A written command is a JSON object {"cmd":"...","args":{...}} terminated by
-// '\n'. Writes are accumulated until that newline arrives, so a command longer
+// '\n'. Supported read-only maintenance commands include `status`, `stats`, and
+// `snapshot`; the snapshot has the versioned schema used by the Mac collector.
+// Writes are accumulated until that newline arrives, so a command longer
 // than one ATT write is simply split by the client -- but a SINGLE write may not
 // exceed 255 bytes (see the flat buffer in bleCmdWriteCb).
 //
@@ -294,6 +296,8 @@ static String bleDispatchCommand(JsonObjectConst root)
         return bleHandleSend(root["args"]);
     if (strcmp(cmd, "stats") == 0)
         return bleBuildStatsJson();
+    if (strcmp(cmd, "snapshot") == 0)
+        return dashBuildBleMaintenanceSnapshotJson();
     if (strcmp(cmd, "config") == 0)
     {
         // No args means read; any args mean apply them. Same call the dashboard

@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No unreleased changes.
+### Added
+
+- Added the read-only BLE `snapshot` command using the versioned `t2can-maintenance-snapshot-v1` schema. It combines firmware identity, runtime counters, CAN driver health, receive-side telemetry, and current configuration without enabling CAN transmission or changing state.
+- Added `scripts/collect_vehicle_snapshot.py` for bounded Mac-side collection from private ESP32 dashboard endpoints. It writes an atomic mode-0600 JSON artifact, rejects public hosts by default, and redacts local network identity from the optional support report.
+
+### Safety
+
+- The collection path is pull-only and read-only. It does not implement phone-to-Mac Internet upload, OTA, or automatic CAN rule generation; observed frames remain evidence for manual review.
 
 ## [4.0.0-beta.2] - 2026-08-16
 

@@ -1,6 +1,6 @@
-# Vehicle ESP32 field maintenance (design only)
+# Vehicle ESP32 field maintenance
 
-This document records the longer-term way to maintain an ESP32 installed in a vehicle without carrying a laptop. It is a design note only. It does **not** add a phone bridge, remote build service, OTA endpoint, rescue AP, or automatic CAN control to the firmware.
+This document records the longer-term way to maintain an ESP32 installed in a vehicle without carrying a laptop. The first read-only collection slice is now implemented; vehicle OTA, remote build service, rescue AP, and automatic CAN control remain out of scope.
 
 ## Intended topology
 
@@ -10,6 +10,25 @@ This document records the longer-term way to maintain an ESP32 installed in a ve
 - **Hermes/Telegram:** carries instructions, snapshots, and explicit approval prompts. Credentials and firmware secrets must not be placed in chat.
 
 The ESP32 must not be directly exposed to the public Internet. A private outbound connection from the phone or an approved private edge is preferred over inbound port forwarding.
+
+## Implemented read-only collection slice
+
+- The authenticated BLE command `{"cmd":"snapshot"}` returns the versioned schema `t2can-maintenance-snapshot-v1`.
+- The BLE snapshot contains firmware identity, runtime counters, CAN driver health (including CAN A/B when the dual driver is present), receive-side telemetry, and current configuration. It does not arm injection, change configuration, or send CAN frames.
+- On the Mac mini, `scripts/collect_vehicle_snapshot.py` pulls only `GET /status`, `GET /diagnostics_detail`, and `GET /gvret/status` from a locally reachable ESP32 and writes one atomic, mode-0600 JSON artifact.
+- The collector refuses public hosts by default, does not accept credentials in the URL, and can optionally add the human-readable `/support` report with SSID, IP address, and MAC address redacted.
+- This is a pull-to-Mac path, not an Internet upload service. The S26 BLE bridge still needs a phone-side implementation; until then the Mac must be able to reach the ESP32's private/local address.
+
+Example on the Mac mini:
+
+```bash
+python3 scripts/collect_vehicle_snapshot.py \
+  http://192.168.4.1 \
+  --output-dir ~/t2can-snapshots \
+  --include-support
+```
+
+The resulting artifact is evidence for analysis and comparison only. It must not be used to infer a DAS layout or automatically generate a transmit rule.
 
 ## Normal maintenance flow
 
@@ -50,11 +69,11 @@ The Mac mini should retain the last known-good artifact and its test evidence. T
 
 ## Implementation order when this becomes active work
 
-1. Define the authenticated S26-to-ESP32 local protocol and bounded diagnostic schema.
-2. Add a read-only snapshot export and verify it against the existing dashboard state.
-3. Add Mac mini artifact staging and signature verification without OTA writes.
+1. ~~Define the authenticated S26-to-ESP32 local protocol and bounded diagnostic schema.~~ Implemented for the BLE command envelope and `t2can-maintenance-snapshot-v1`.
+2. ~~Add a read-only snapshot export and verify it against the existing dashboard state.~~ Implemented through the BLE snapshot and Mac-side read-only collector.
+3. Add Mac mini artifact staging and signature verification without OTA writes. This means firmware-artifact handling, not automatic application to a vehicle.
 4. Add a dry-run OTA transaction that never boots the artifact.
 5. Add dual-partition OTA, self-test, rollback, and read-back verification.
 6. Only after bench and disconnected-vehicle testing, consider a manually approved in-vehicle update.
 
-Until that work is explicitly started, this file is the plan and the current firmware remains the implementation boundary.
+The read-only collection slice above is the current implementation boundary. OTA, artifact signing, and any vehicle-side firmware write remain future work until their safety gates are implemented and separately approved.

@@ -41,6 +41,10 @@
 #include <esp_random.h>
 #endif
 
+#ifndef FIRMWARE_VERSION
+#define FIRMWARE_VERSION "unknown"
+#endif
+
 #ifndef DASH_SSID
 #error "Define -DDASH_SSID in build_flags (e.g. -DDASH_SSID=\\\"ADUnlock-1234\\\")"
 #endif
@@ -1112,6 +1116,90 @@ static void dashClearBleProbation()
     prefs.putBool("ble_prob", false);
     prefs.end();
     dashLog("[MODE] BLE mode confirmed by a client; WiFi fallback disarmed");
+}
+
+static String ctrlBuildConfigJson();
+static String dashBuildBleStatusJson();
+
+// Read-only maintenance snapshot shared with the phone bridge. It deliberately
+// contains health and receive-side telemetry only; it does not arm injection,
+// change configuration, or expose raw credentials.
+static String dashBuildBleMaintenanceSnapshotJson()
+{
+    const uint32_t now = millis();
+    Chassis::TelemetrySnapshot telemetry{};
+    {
+        DashDataGuard guard;
+        telemetry = dashTelemetry.snapshot(now);
+    }
+
+    char driverJson[768] = "{\"type\":\"unavailable\",\"stateCode\":0}";
+    if (dashDriver)
+        dashDriver->diagnosticsJson(driverJson, sizeof(driverJson));
+
+    String j = "{\"ok\":true,\"schema\":\"t2can-maintenance-snapshot-v1\",\"readOnly\":true";
+    j += ",\"firmware\":\"";
+    j += jsonEscape(String(FIRMWARE_VERSION));
+    j += "\",\"uptimeS\":";
+    j += (unsigned long)(now / 1000);
+    j += ",\"status\":";
+    j += dashBuildBleStatusJson();
+    j += ",\"runtime\":{\"canFrames\":";
+    j += (unsigned long)RuntimeDiagnostics::canFrames.load(std::memory_order_relaxed);
+    j += ",\"canAgeMs\":";
+    j += (unsigned long)RuntimeDiagnostics::canAgeMs(now);
+    j += ",\"txOk\":";
+    j += (unsigned long)RuntimeDiagnostics::txOk.load(std::memory_order_relaxed);
+    j += ",\"txFail\":";
+    j += (unsigned long)RuntimeDiagnostics::txFail.load(std::memory_order_relaxed);
+    j += ",\"freeHeap\":";
+    j += (unsigned long)esp_get_free_heap_size();
+    j += "}";
+    j += ",\"telemetry\":{\"acceptedFrames\":";
+    j += (unsigned long)telemetry.acceptedFrames;
+    j += ",\"lastObservedMs\":";
+    j += (unsigned long)telemetry.lastObservedMs;
+    j += ",\"speed\":{\"seen\":";
+    j += telemetry.speedSeen ? "true" : "false";
+    j += ",\"kph\":";
+    j += telemetry.speedKph;
+    j += ",\"ageMs\":";
+    j += telemetry.speedSeen ? (unsigned long)(now - telemetry.speedMs) : 0UL;
+    j += "},\"gear\":{\"seen\":";
+    j += telemetry.gearSeen ? "true" : "false";
+    j += ",\"value\":";
+    j += (unsigned int)telemetry.gear;
+    j += ",\"autonomy\":";
+    j += telemetry.autonomyActive ? "true" : "false";
+    j += ",\"ageMs\":";
+    j += telemetry.gearSeen ? (unsigned long)(now - telemetry.gearMs) : 0UL;
+    j += "},\"steering\":{\"seen\":";
+    j += telemetry.steeringSeen ? "true" : "false";
+    j += ",\"deg\":";
+    j += telemetry.steeringAngleDeg;
+    j += ",\"ageMs\":";
+    j += telemetry.steeringSeen ? (unsigned long)(now - telemetry.steeringMs) : 0UL;
+    j += "},\"brake\":{\"seen\":";
+    j += telemetry.brakeSeen ? "true" : "false";
+    j += ",\"applied\":";
+    j += telemetry.brakeApplied ? "true" : "false";
+    j += ",\"ageMs\":";
+    j += telemetry.brakeSeen ? (unsigned long)(now - telemetry.brakeMs) : 0UL;
+    j += "},\"das\":{\"seen\":";
+    j += telemetry.dasSeen ? "true" : "false";
+    j += ",\"ap\":";
+    j += (unsigned int)telemetry.apState;
+    j += ",\"handsOn\":";
+    j += (unsigned int)telemetry.handsOn;
+    j += ",\"ageMs\":";
+    j += telemetry.dasSeen ? (unsigned long)(now - telemetry.dasMs) : 0UL;
+    j += "}}";
+    j += ",\"driver\":";
+    j += driverJson;
+    j += ",\"config\":";
+    j += ctrlBuildConfigJson();
+    j += "}";
+    return j;
 }
 
 // Compact status for the BLE app (independent of the detailed HTTP /status so
