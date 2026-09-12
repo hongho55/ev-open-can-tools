@@ -83,6 +83,117 @@ community captures does not establish ECU acceptance or safe vehicle behavior.
 | Commit raw vehicle logs | **Do not adopt** | P0 | Keep private local originals; commit only minimized, sanitized, provenance-labelled fixtures. |
 | Send raw vehicle payloads to cloud | **Do not adopt by default** | P0 | Analyze locally and send only bounded derived summaries unless a separate explicit export is approved. |
 
+## Complete Flipper FSD feature-port inventory
+
+The roadmap tracks the complete useful feature surface rather than copying an
+entire fork. `Retain` means this repository already has the feature or an
+equivalent that must survive the refactor. `Port` means implement the protocol
+behavior behind this project's common state/policy/driver interfaces. `Research`
+means decoder, replay, and dry-run work only until the verification ladder is
+satisfied. `Do not port` is an explicit decision, not an accidental omission.
+
+The `sqladm1n` README describes 37 handlers at an earlier release boundary; its
+current shared header contains additional helpers and newer beta features. The
+inventory below therefore uses named behaviors rather than relying on that stale
+handler count.
+
+### Core, lifecycle, and tooling
+
+| Flipper FSD behavior | Disposition | Phase and adaptation |
+| --- | --- | --- |
+| HW3/HW4 detection from `0x398` plus `0x3FD`/`0x399`/`0x3EE` fallbacks | **Port and cross-check** | P1 decoder registry; confidence-labelled per bus. Never change an effective layout without confirmation. |
+| Palladium Legacy-to-HW3 runtime upgrade | **Port conditionally** | P1 recommendation/state transition; Active behavior requires stable repeated evidence and policy re-evaluation. |
+| HW3/HW4 `0x3FD` and Legacy `0x3EE` FSD frame handling | **Retain and harden** | P0 common scheduler; P2 per-profile vehicle qualification. |
+| Force FSD / China-mode UI-selection bypass | **Retain as explicit profile feature** | P2; off by default, audited, and never represented as an entitlement bypass. |
+| Speed profile default, follow-distance synchronization, profile lock, and HW4 offset | **Port/merge** | P1 decoder/state work; P2 write qualification where a frame is modified. |
+| Active / Listen-Only / Service operation modes | **Replace with common session model** | P0 Observe/Active/Bench/Maintenance state machine. |
+| AP-First and stable-AP debounce | **Port** | P1 state gate; P2 applies to every relevant FSD/Nag TX path. |
+| 2026.14.x compatibility warning | **Port as capability warning** | P1 dashboard/Support notice tied to observed profile/evidence, not a free-standing toggle. |
+| Continuous AP / automatic re-engagement | **Research; no direct port** | P3 supervised, bounded state machine only. Brake and stalk aborts must fail closed. |
+| Vehicle OTA detection, debounce, TX pause, and Ignore-OTA override | **Retain and harden** | P0 separate `VehicleOtaState`; any override is visible, expiring, and audited. |
+| CAN capture in candump format | **Retain/extend** | P0 recorder provenance and privacy policy. |
+| Full-rate single-ID hardware filtering and larger RX queue | **Port where supported** | P1 capture mode; filter ownership cannot hide frames needed by safety gates. |
+| ESP32 HTTP CAN stream and ID filters | **Merge into private recorder/control plane** | P1; authenticated, bounded, local/private, and not a public raw-payload endpoint. |
+| `.cantest` parser, dry-run, parked/stationary interlock, and result log | **Port in stages** | P1 dry-run only; P2 physical Bench execution after semantic denylist and per-ID policy. |
+| Checksum/CRC research tooling | **Port as offline tooling** | P1 local analysis; recovered candidates remain untrusted until independently verified. |
+| Shared Flipper/ESP32 protocol-core idea | **Adopt architecturally** | P0/P1 one host-testable protocol core; do not import Flipper hardware/UI dependencies. |
+| Wi-Fi AP/STA settings, masked secrets, NVS persistence | **Retain equivalent and harden** | P1 owner authorization and read-back; secrets never enter snapshots or logs. |
+| Deep sleep and factory reset | **Retain/verify existing equivalent** | P1 lifecycle tests; wake/reset cannot restore a TX arm lease. |
+| Live counters, CRC errors, no-traffic warning, status display | **Retain and extend** | P0 per-bus health plus dashboard/BLE/Support parity. |
+| SD log rotation and bounded capture duration | **Port policy, adapt storage backend** | P1 recorder limits and explicit storage-pressure events. |
+
+### Transmit and frame-mutation features
+
+| Feature | CAN surface | Disposition |
+| --- | --- | --- |
+| Core FSD unlock, including Legacy path | `0x3FD`, `0x3EE` | **Retain; P0 scheduler, P2 qualification.** |
+| Enhanced Autopilot/Summon enable flag | `0x3FD` | **Port with the core handler; P2, profile-specific.** It does not itself implement Summon motion control. |
+| Speed profile and HW4 speed offset writes | `0x3FD` | **Port/merge; P2.** Preserve mux and checksum/counter evidence. |
+| Emergency-vehicle detection flag | `0x3FD` | **Port as disabled module; P2.** Separate capability and policy entry. |
+| TLSSC bit38 and Lane Graph | `0x3FD` | **Port as separate disabled modules; P2.** Do not silently couple unrelated bits. |
+| FSD unlock for Legacy hardware | `0x3EE` | **Retain; P2 profile qualification.** |
+| Nag killer, DAS-aware gate, organic variation, and grip pulse | `0x370` | **Retain and harden; P1/P2.** Include `0x399` fallback and AP-First interaction. |
+| ISA speed-warning chime suppression | `0x399` on HW4 | **Retain/port with strict HW dispatch; P2.** Never mutate pre-Highland DAS-status `0x399`. |
+| Battery preconditioning request | `0x082` | **Port as bounded Active feature; P2.** Add state, cadence, expiry, and abort policy. |
+| TLSSC Restore | `0x331` | **Port as high-impact disabled module; P2.** Record the expected MCU/UI effect and require fresh read-back. |
+| GTW Config Replay | `0x7FF` | **Port with honest naming; P2.** Broadcast-layer replay only; not ban prevention or backend/NVRAM repair. |
+| GTW Tier Override | `0x7FF` mux 2 | **Research then Bench; P3.** More aggressive than replay and mutually exclusive with it. |
+| Nav FSD Route | `0x3F8` | **Port as disabled module; P2.** |
+| Hands-Off UI flag | `0x3F8` | **Research; P3.** Do not treat a UI signal as sensor-level validation. |
+| Developer Mode | `0x3F8` | **Port as disabled diagnostic experiment; P2.** |
+| Force-LHD signal | `0x3F8` | **Do not promote; research record only.** Upstream reports no lane-side effect and planned removal. |
+| Telemetry Off | `0x3F8` | **Research only; P3.** It may itself be a detection signal. |
+| ScrollPress AP Engage | `0x3C2` mux 1 | **Research then Bench; P3.** HW4/profile-specific; explicit deny on unsupported HW. |
+| Track Mode request | `0x313` | **Port as Service/Bench-only module; P2.** Require checksum, stationary state, expiry, and read-back. |
+| Hazard request and Wiper Off | `0x3F5` | **Port as separate disabled modules; P2.** Shared-ID modules need conflict arbitration. |
+| Rear fog and other legacy `0x3F5` extras | `0x3F5` | **Inventory/research first; P3.** Current shared handler header does not prove every older menu toggle still has an implementation. |
+| Park-button inject | `0x229` | **Do not port for TX.** Keep read-only decoder and an explicit `.cantest` deny rule; upstream identifies collision/gear-request risk. |
+| Steering tune request | `0x101` | **Research then Bench; P3.** Chassis-bus feature with a distinct high-impact policy class. |
+| High-beam strobe | `0x249` | **Port only as bounded Bench/Service candidate; P2.** |
+| Turn-signal left/right | `0x249` | **Port only as bounded Bench/Service candidates; P2.** |
+| Wiper wash | `0x249` | **Port only as bounded Bench/Service candidate; P2.** |
+| Fold mirrors and rear-window heat legacy extras | fork UI/handler dependent | **Inventory and source-verify; P3.** Do not claim a port until the exact current handler and CAN contract are found. |
+| `0x247` hands-on spoof | `0x247` plus `0x3E9` observation | **Research P1, Bench candidate P2.** Current dataset provides RX correlation, not TX proof. |
+| Continuous AP | multiple observed state inputs plus an engage path | **No literal automatic port; P3 supervised design only.** |
+| Summon motion control | multiple, not established by the EAP flag | **No unattended port.** P3 supervised research only after exact command semantics and abort path exist. |
+
+### Read-only telemetry and safety inputs
+
+All useful read-only parsers are in scope because they improve observability or
+policy gating. A parser used as a TX gate needs stronger freshness, profile, and
+negative-case evidence than a dashboard-only parser.
+
+| Signal family | CAN IDs | Disposition |
+| --- | --- | --- |
+| Hardware/profile and gateway configuration | `0x398`, `0x7FF` | **Port/merge P1.** Detection remains a recommendation until confirmed. |
+| Vehicle OTA state | `0x318` | **Retain and harden P0.** |
+| BMS voltage/current/power, SoC, thermal, energy consumption | `0x132`, `0x292`, `0x312`, `0x33A` | **Retain/complete P1.** Keep model-specific confidence. |
+| Vehicle/UI speed and wheel speeds | `0x257`, `0x175` | **Retain/complete P0/P1.** Freshness-critical safety inputs. |
+| Brake/stability | `0x145` | **Retain P0.** Missing or stale state blocks dependent actions. |
+| Track/traction and rear-defrost state | `0x118`, `0x343` | **Port P1.** |
+| EPAS tune mode and torsion-bar torque | `0x370` | **Retain/complete P1.** Separate observation from Nag mutation. |
+| DAS status, hands-on, lane change, blind spot, FCW, vision limit | `0x39B`, HW-dependent `0x399` | **Retain/complete P1.** Explicit hardware dispatch. |
+| DAS status2 and activation failure | `0x389` | **Retain/complete P1.** |
+| DAS settings/autosteer read-back | `0x293` | **Retain/complete P1.** |
+| ACC state and set speed | `0x2B9` | **Retain/complete P1.** |
+| Cruise, gear, park brake, autopark, digital speed | `0x286` | **Retain/complete P1.** |
+| Motor torque | `0x108` | **Retain/complete P1.** |
+| Blinker, door, belt, and high-beam warning state | `0x311` | **Retain/complete P1.** |
+| Steering angle and DAS steering request | `0x129`, `0x488` | **Retain/complete P1.** |
+| Steering-permission monitor | `0x27D` | **Source-audit then port P1.** The current header names the ID but exposes no matching public parser prototype. |
+| Right/left stalk observations | `0x229`, `0x249` | **Port read-only P1.** `0x229` remains TX-denied. |
+| Hands-on/nag research correlation | `0x247`, `0x3E9` | **Research P1.** |
+
+### Explicit non-porting rule
+
+“Everything is inventoried” does not mean “everything is enabled.” The project
+will not wholesale-copy Flipper scenes, GPIO/MCP2515 glue, unverified menu
+toggles, source-specific persisted-state layouts, or a handler whose current
+source and CAN contract cannot be identified. GPL-derived protocol behavior must
+retain source/ref/license provenance. Every accepted behavior is adapted to
+T-2CAN dual-bus routing and the common policy, scheduler, OTA, recorder, and test
+interfaces.
+
 ## Target architecture
 
 ### One command path
