@@ -1,0 +1,650 @@
+# T-2CAN Active FSD integration roadmap
+
+> Status: approved planning baseline; not an implementation or a claim of vehicle validation.
+>
+> Scope: LILYGO T-2CAN dual-CAN firmware, ESP32 dashboard/BLE/OTA control plane,
+> Flipper FSD-derived decoders and transmit features, offline replay, self-test,
+> incident evidence, and the S26/Mac maintenance path.
+>
+> Out of scope for this document: connector pin maps, harness pin selection, and
+> public-road test procedures.
+
+## Bottom line
+
+This project will retain CAN transmit features and add device OTA. It will not
+be converted into a receive-only product. The design goal is instead:
+
+> Keep active CAN and OTA capabilities, but force every operation through one
+> observable, expiring, fail-closed authorization and verification path.
+
+The firmware shall have four explicit operating sessions:
+
+1. **Observe** — CAN receive, decoding, GVRET, diagnostics, and recording. No
+   effective transmit permission.
+2. **Active** — reviewed built-in features or plugins may request CAN TX through
+   the common policy and scheduler.
+3. **Bench** — internal controller loopback and isolated transceiver tests. This
+   session must not be confused with a vehicle Active session.
+4. **Maintenance** — device OTA, rollback, artifact verification, and post-boot
+   self-test. CAN TX is paused until the new image is confirmed healthy and the
+   user explicitly re-arms it.
+
+Configuration may persist across reboot, but an **armed TX lease must not**.
+Neither a reboot nor a successful OTA may resume transmission automatically.
+
+## Evidence baseline
+
+The following results were collected before writing this plan:
+
+- `t2can-bobby`: `python3 -m platformio test -e native` completed with
+  **196/196 native test cases passing**. Coverage includes dual-CAN routing,
+  simulated loopback, recorder behavior, GVRET framing, HW3/HW4/Legacy
+  handlers, injection gates, TWAI filters, and MCP2515 recovery.
+- `sqladm1n/flipper-tesla-fsd`: `make -C test check` completed with
+  **236 passed, 0 failed** for its protocol core. These are that fork's host
+  tests, not proof that its behavior is correct on this project's hardware or
+  target vehicle.
+- The checked-out `sqladm1n` research set contains **78 candump logs** and
+  **1,316,711 parsed frames**. The current parser accepted every frame line in
+  those logs.
+- The set contains 348 unique CAN IDs. Relevant observed counts include:
+  - `0x247`: 4,569 RX frames across 39 files;
+  - `0x3E9`: 1,940 RX frames across 39 files;
+  - `0x229`: 2,328 RX frames across 38 files, all DLC 3;
+  - `0x3FD`: 25,000 total frames across 77 files;
+  - `0x7FF`: 3,751 RX frames across 39 files.
+- All 11,853 frames in the `_tx.log` files are `0x3FD`. Therefore this data is
+  transmit evidence for `0x3FD` only; it is **not** evidence that `0x247`,
+  `0x229`, `0x370`, or `0x485` transmission works.
+- `0x370` and `0x485` are absent from this dataset. Existing Nag and gear tests
+  for those IDs remain synthetic until a separate capture is obtained.
+- The current Python analyzer can parse the research logs and decode its
+  existing `0x7FF`/diagnostic surface, but it does not yet replay candump frames
+  through the complete firmware handler and TX-decision pipeline.
+
+These facts define the present evidence boundary. Passing host tests or parsing
+community captures does not establish ECU acceptance or safe vehicle behavior.
+
+## Decisions for the requested feature set
+
+| Requested feature | Decision | Phase | Required interpretation |
+| --- | --- | --- | --- |
+| OTA flashing | **Adopt** | P0 | Signed, board-bound, dual-partition device OTA with boot confirmation and rollback. |
+| BLE owner/key provisioning | **Adopt with scope restriction** | P1 | Provision a device-owner authorization key only. Never import or expose a Tesla drive/passive-entry key. |
+| Web-based remote CAN control | **Adopt with network and policy restrictions** | P1 | Private/local control transport that creates `TxIntent`; it never calls a CAN driver directly. |
+| Default TX activation | **Modify, do not adopt literally** | P0 | Feature configuration may persist, but first boot, reboot, disconnect, watchdog reset, and OTA always clear the volatile TX arm lease. |
+| `0x247` spoof | **Research and bench candidate** | P2 | Add RX decoding and dry-run correlation first. The available dataset has no `0x247` TX evidence. |
+| Nag killer actual TX | **Retain and harden** | P1/P2 | Keep existing bounded modes and policy; add research replay, scheduler ownership, and isolated bench verification. |
+| ULC unlock | **Deferred high-risk research** | P3 | Decoder and dry-run evidence first; no production enablement without authoritative format and target evidence. |
+| Automatic Summon control | **Replace with supervised Summon session** | P3 | User-initiated, expiring, dead-man/abort-controlled session; no unattended or scheduled vehicle motion. |
+| Automatic bitrate detection | **Adopt as listen-only recommendation** | P1 | Probe and score candidates without transmitting; require explicit confirmation before Active TX locks a bitrate. |
+| Layout change from observed frames | **Adopt as recommendation only** | P1 | Report candidate/confidence/evidence; never change the effective layout automatically. |
+| Automatic CAN-rule generation | **Adopt as disabled draft generation** | P1 | Produce a reviewed `send:false` draft plus fixtures and evidence; never install or enable automatically. |
+| Commit raw vehicle logs | **Do not adopt** | P0 | Keep private local originals; commit only minimized, sanitized, provenance-labelled fixtures. |
+| Send raw vehicle payloads to cloud | **Do not adopt by default** | P0 | Analyze locally and send only bounded derived summaries unless a separate explicit export is approved. |
+
+## Target architecture
+
+### One command path
+
+Web, BLE, built-in features, plugins, replay, and future clients must share the
+same command path:
+
+```text
+Web / BLE / built-in feature / plugin
+                 |
+                 v
+              TxIntent
+                 |
+                 v
+          CommandAuthorizer
+                 |
+                 v
+              TxPolicy
+                 |
+                 v
+            TxScheduler
+                 |
+                 v
+          CAN A / CAN B driver
+                 |
+                 v
+              TxAudit
+```
+
+No web endpoint, BLE command, plugin callback, or built-in handler may bypass
+this path and call the hardware driver directly.
+
+### State separation
+
+Do not continue expanding one all-purpose FSD state structure. Keep these
+responsibilities separate:
+
+- `VehicleState`: observed speed, gear, brake, AP, Summon, driver input, and
+  freshness.
+- `CanBusHealth`: per-physical-bus liveness, queue pressure, errors, bus-off,
+  quarantine, and recovery.
+- `TxIntent`: requested feature, bus, frame class, expiry, source, and request ID.
+- `TxPolicy`: mode, arm lease, feature allowlist, state gates, rate/burst limits,
+  and abort reasons.
+- `TxScheduler`: cadence, counter/checksum ownership, queueing, cancellation,
+  and ambiguous-result handling.
+- `DeviceOtaState`: device firmware download, verification, apply, reboot,
+  confirmation, and rollback.
+- `VehicleOtaState`: CAN-observed vehicle update state and its TX-pause policy.
+- `EvidenceState`: recorder generation, capture provenance, test results, and
+  audit records.
+
+### Operating-state outline
+
+```text
+BOOT
+  -> OBSERVE
+       -> ACTIVE_ARMED -> ACTIVE_TX
+       -> BENCH_INTERNAL_LOOPBACK
+       -> BENCH_TRANSCEIVER
+       -> MAINTENANCE_OTA
+
+Any stale safety input, bus quarantine, control-channel loss, device OTA,
+vehicle OTA policy, watchdog reset, or explicit stop:
+  -> TX_BLOCKED
+```
+
+`TX_BLOCKED` must be a first-class state shown in the dashboard, BLE snapshot,
+Support report, serial log, and incident evidence. It must include a stable
+reason code.
+
+## P0 — foundation required before adding more active features
+
+### P0.1 Hardware self-test framework
+
+Implement self-test as separate modes rather than reusing a vehicle feature.
+The `wangjizhu` fork is useful as a behavioral reference because it switches an
+MCP2515 into true internal loopback and reports TX/RX/error counts. Its Normal
+mode and fixed test-frame behavior must not be copied into a vehicle session.
+
+Required tests:
+
+1. MCP2515 internal loopback on CAN A;
+2. TWAI internal loopback on CAN B;
+3. exact TX-to-RX payload comparison;
+4. physical and semantic bus attribution;
+5. timestamp monotonicity;
+6. rolling counter and checksum fixtures;
+7. RX/TX queue saturation and bounded failure;
+8. driver init, stop, and re-init;
+9. one-controller failure while the other controller and USB diagnostics remain
+   available;
+10. cancellation and cleanup when the user leaves Bench mode.
+
+Bench transceiver testing is a separate stage and requires a disconnected,
+isolated CAN fixture and a second logger. Internal loopback success is not proof
+that the transceiver, wiring, or vehicle path works.
+
+Acceptance:
+
+- Self-test starts in internal loopback only.
+- Entering physical Bench TX requires a distinct action and visible mode.
+- Leaving the mode stops pending periodic work and clears the TX lease.
+- The report records firmware identity, controller, bus, counts, errors, and the
+  exact test result without including credentials.
+- A firmware build cannot enter Bench mode from a CAN frame or diagnostic
+  observation.
+
+### P0.2 Candump replay adapter
+
+Add an offline adapter that sends parsed candump records through the same
+receive handlers and state transitions used by firmware:
+
+```text
+candump -> FrameRecord -> normalized time/bus -> CanFrame
+        -> decoder/state -> TxIntent/would-send -> evidence
+```
+
+Replay never calls a physical driver. A TX-producing handler must emit a
+`would-send` result containing the planned bus, ID, DLC, policy result, and
+output digest. The raw output frame remains in the private local test artifact.
+
+Initial replay targets:
+
+- `0x247` plus `0x3E9` correlation;
+- `0x229` DLC/counter/state analysis;
+- `0x3FD` mux and RX/TX comparison;
+- `0x7FF` mux/config and replay-policy behavior;
+- existing `0x399`/`0x39B`, speed, gear, brake, and telemetry parsers.
+
+Acceptance:
+
+- The adapter parses the complete 1,316,711-frame research set with zero
+  unsupported-line failures.
+- Decoder errors, rejected DLCs, unknown layouts, timestamp regressions, and
+  drops are counted rather than silently skipped.
+- Replay is deterministic: the same input, profile, and code revision produce
+  the same derived output.
+- Community raw logs remain outside Git; tests use local paths or sanitized
+  fixtures.
+
+### P0.3 Common TX scheduler, policy, and audit
+
+Keep TX, but ensure one subsystem owns physical emission.
+
+Every `TxIntent` must carry:
+
+- source and feature ID;
+- request ID and expiry;
+- target semantic and physical bus;
+- expected ID, DLC, and mux constraints;
+- cadence, burst, and cooldown limits;
+- counter/checksum strategy;
+- required vehicle-state freshness;
+- required operation mode;
+- cancellation and abort policy.
+
+Rules:
+
+- Unknown, stale, contradictory, or unavailable safety state blocks the intent.
+- A control-channel disconnect expires the active lease.
+- Reboot, brownout, watchdog reset, and OTA clear the lease.
+- A send result is recorded as requested, blocked, attempted, succeeded, or
+  failed. A successful driver return is not ECU acceptance.
+- An ambiguous or timed-out state-changing action is reconciled from fresh state
+  before any retry; it is not blindly repeated.
+- Per-feature allowlists and rate limits apply to built-in handlers and plugins
+  equally.
+- Driver-input abort and a physical disconnect/kill path remain available for
+  any controlled active test.
+
+Acceptance:
+
+- Tests prove that no control surface can bypass `TxPolicy`.
+- A blocked intent produces no physical attempt on either bus.
+- Combined-bus requests preserve separate per-bus results.
+- Pending work is cleared by mode change, stale state, OTA, quarantine, stop,
+  disconnect, and reboot simulation.
+- Recorder output identifies the exact source, reason, bus, and attempt result.
+
+### P0.4 Per-bus health, RX stall, and quarantine
+
+Maintain independent state for CAN A and CAN B:
+
+```text
+STARTING -> HEALTHY -> DEGRADED -> RX_STALLED
+         -> BUS_ERROR -> QUARANTINED -> RECOVERED
+```
+
+Measure:
+
+- last RX and TX timestamps;
+- frame rate and unique-ID count;
+- RX/TX queue pressure and drops;
+- controller error and bus-off state;
+- failed/successful TX counts;
+- stall, quarantine, and recovery counts;
+- last stable reason code.
+
+A failed bus must not take down the other bus, USB diagnostics, recorder, or
+maintenance control plane. Quarantine blocks TX for that physical bus. Recovery
+may restore observation, but effective TX requires policy re-evaluation and a
+new arm decision; it must not resume silently.
+
+### P0.5 Device OTA transaction and rollback
+
+Device OTA and CAN-observed vehicle OTA are different state machines.
+
+Required device OTA flow:
+
+```text
+IDLE -> AUTHORIZED -> DOWNLOADING -> VERIFIED -> APPLYING
+     -> REBOOTING -> SELF_TEST -> CONFIRMED
+                              \-> ROLLBACK
+```
+
+Requirements:
+
+- one approval names one artifact, board/profile, version, and maintenance
+  session;
+- authenticated private transport and signed manifest;
+- independently reported file size and digest;
+- board, flash size, partition layout, and feature-profile compatibility checks;
+- dual OTA partitions and a bounded boot-confirmation window;
+- TX pause and pending-queue clear before applying an image;
+- post-boot internal self-test and read-back of firmware identity, CAN health,
+  dashboard/BLE availability, and recorder state;
+- rollback to a known-good image when confirmation fails;
+- preservation of the failed-image diagnostics and rollback reason;
+- no firmware secrets, credentials, or keys in URLs, logs, Telegram, or incident
+  exports.
+
+Existing HTTPS, board-artifact, streaming, and concurrency checks remain and are
+extended rather than replaced.
+
+Vehicle OTA detection continues to pause active features according to policy.
+An `ignore vehicle OTA` override, if retained, must be explicit, session-scoped,
+visible, and audited; it cannot become a silent persistent default.
+
+### P0.6 Firmware identity and capability manifest
+
+Every status, maintenance snapshot, incident, replay report, and OTA result must
+include:
+
+- firmware version and Git revision;
+- build environment and board/profile;
+- supported physical and semantic buses;
+- enabled feature modules;
+- decoder schema version;
+- TX policy version and effective mode;
+- OTA slot/state and rollback reason;
+- self-test result;
+- non-secret configuration digest.
+
+The same manifest is used to reject an artifact built for a different board or
+feature profile.
+
+### P0.7 Private evidence and fixture policy
+
+- Raw community and vehicle captures remain private local artifacts.
+- Raw logs, VINs, device identifiers, credentials, tokens, owner keys, and
+  unredacted payload collections are not committed.
+- A fixture extraction tool creates the minimum frame sequence required for one
+  test and attaches source, transformation, purpose, and expected result.
+- Cloud/LLM analysis receives ID, DLC, timing, count, transition, and derived
+  fields by default, not raw payloads.
+- Private originals receive restrictive permissions and a content digest.
+- No capture may automatically create, install, enable, or execute a TX rule.
+
+## P1 — controlled automation and broader decoding
+
+### P1.1 Decoder registry and confidence model
+
+Move signal definitions toward a table/registry that records:
+
+- ID, bus, DLC, mux, field extraction, scale, signedness, and freshness;
+- supported vehicle/profile assumptions;
+- source and evidence level;
+- decoder version;
+- `observed`, `inferred`, or `confirmed` confidence;
+- whether the definition may be used only for display, for a policy gate, or for
+  TX generation.
+
+A display-only observation does not automatically become a permission gate.
+
+### P1.2 `0x247`/`0x3E9` research replay
+
+First milestone:
+
+- decode and timeline `0x247` observations;
+- detect `0x3E9` candidate nag/satisfied/inactive transitions;
+- correlate changes without generating physical TX;
+- compare the fork's claims against all 39 relevant capture files;
+- produce minimized fixtures for confirmed parser behavior;
+- expose unknown/contradictory patterns rather than coercing them.
+
+Only after this milestone may a `0x247` TX module enter P2 Bench status. The
+available research set has no `0x247` TX result, and its source vehicle/profile
+must not be treated as proof for another model or software release.
+
+### P1.3 `0x229` validator
+
+Add read-only handling for the observed DLC-3 frames:
+
+- frame-shape and cadence validation;
+- counter/checksum candidate analysis;
+- state-transition timeline;
+- profile/vehicle confidence label;
+- explicit separation between an observed state frame and a valid command.
+
+Do not add a physical `0x229` write merely because parsing succeeds.
+
+### P1.4 Disabled `.cantest` and rule-draft workflow
+
+Support a reviewed test-profile format with this path:
+
+```text
+parse -> validate -> dry-run -> policy simulation -> explicit arm -> execute
+```
+
+Initial implementation stops at dry-run. A profile must declare feature,
+target bus, ID, DLC, mux, cadence, counter/checksum policy, state prerequisites,
+maximum duration, and abort conditions.
+
+Automatic rule generation may create only:
+
+- `send:false`;
+- disabled installation state;
+- evidence links and confidence;
+- generated native fixtures;
+- a human-readable mutation diff;
+- no automatic layout selection or target-bus inference.
+
+Promotion to an enabled rule is a separate reviewed action.
+
+### P1.5 Listen-only bitrate recommendation
+
+For each physical bus, probe candidate rates only in hardware listen-only mode.
+Score them from valid frame count, standard-ID/DLC plausibility, controller error
+behavior, and stability over a bounded window.
+
+The result is a recommendation:
+
+```text
+candidate rate + confidence + evidence + alternatives
+```
+
+It must not change the Active TX bitrate automatically. The user confirms the
+rate, after which the Active session locks it. Loss of confidence blocks TX
+rather than silently switching rates.
+
+### P1.6 Layout recommendation, not automatic layout mutation
+
+Observed frames may produce a ranked layout suggestion. The UI must show the
+supporting IDs, DLCs, freshness, conflicts, and confidence. The effective layout
+changes only after explicit confirmation and is recorded as a configuration
+event. A capture, reboot, or firmware update never changes it automatically.
+
+### P1.7 BLE device-owner provisioning
+
+BLE provisioning authenticates control of this ESP32 device; it is not Tesla
+vehicle-key enrollment.
+
+Requirements:
+
+- physical-presence or bounded first-enrollment window;
+- challenge-response rather than transmitting a reusable plaintext secret;
+- owner-key fingerprint, revocation, and replacement flow;
+- encrypted/local secret storage where platform support permits;
+- separate permissions for diagnostics, OTA authorization, and CAN arm;
+- no Tesla drive key, passive-entry key, or private owner key in logs or exports;
+- anti-replay request ID, expiry, and deduplication;
+- read-back of the applied permission state without returning secret material.
+
+### P1.8 Private Web remote CAN control
+
+The web UI remains local/private and must not expose the ESP32 directly to the
+public Internet. The preferred remote path is S26 as the authenticated field
+console/bridge to the private Mac environment.
+
+Web/BLE commands create `TxIntent` objects and receive an explicit result. They
+cannot write a frame directly, extend an expired lease implicitly, or convert a
+diagnostic session into OTA/TX authority. Public inbound port forwarding is not
+part of the plan.
+
+### P1.9 Anomaly and evidence bundle
+
+Add local-only detection for:
+
+- missing or newly appearing IDs;
+- period and jitter changes;
+- DLC changes;
+- frame-rate bursts;
+- counter discontinuities;
+- per-bus asymmetry;
+- RX stall/recovery;
+- TX echo/overwrite differences.
+
+An anomaly creates evidence and may block a policy gate, but it does not generate
+an enabled TX rule or change layout/bitrate by itself.
+
+## P2 — active feature qualification
+
+P2 promotes one feature at a time. Each module needs its own decoder, fixtures,
+`would-send` output, scheduler policy, isolated bench result, and rollback/abort
+behavior.
+
+### P2.1 Existing Nag TX hardening
+
+- Route all modes through the common scheduler and audit path.
+- Replay current synthetic vectors and any future private `0x370` capture.
+- Verify counter/checksum, bounds, cadence, stale-state blocks, mode changes,
+  cancellation, and send failure.
+- Preserve current fail-closed behavior for unsupported mode/profile
+  combinations.
+- Do not treat the `sqladm1n` dataset as Nag TX validation because it contains
+  no `0x370` frames.
+
+### P2.2 `0x247` Bench candidate
+
+Promotion prerequisites:
+
+1. P1 correlation passes across the complete research set;
+2. frame layout discrepancies are resolved and documented;
+3. dry-run output is deterministic;
+4. the scheduler enforces feature-specific duration/rate/abort constraints;
+5. an isolated bench and second logger verify exact output and stop behavior;
+6. the feature remains disabled by default and unavailable outside its declared
+   profile.
+
+A community RX capture and a passing host test are not enough to claim working
+vehicle behavior.
+
+### P2.3 Other selected TX modules
+
+Evaluate individually rather than importing the whole fork:
+
+- body-control candidates such as lighting/wiper/stalk features;
+- selected checksummed configuration requests;
+- existing FSD/AP frame modifications;
+- reviewed plugin equivalents.
+
+Higher-impact feature classes require stronger evidence and cannot inherit a
+lower-risk module's approval.
+
+## P3 — deferred high-impact research
+
+### P3.1 ULC unlock
+
+Keep as an explicit research item, not a promised feature. Required before any
+Bench TX status:
+
+- authoritative or independently corroborated message semantics;
+- complete counter/checksum/session behavior;
+- exact target profile and software-version evidence;
+- offline replay and negative cases;
+- isolated bench result;
+- identified physical consequence, abort, and recovery path.
+
+### P3.2 Supervised Summon session
+
+Do not implement unattended, scheduled, or cloud-autonomous vehicle motion.
+The acceptable target is a supervised session with:
+
+- deliberate user initiation and continuous/dead-man authorization;
+- short command expiry and deduplication;
+- fresh, consistent gear, speed, AP, Summon, bus-health, and control-channel
+  state;
+- immediate abort on user release, state conflict, stale input, disconnect,
+  vehicle OTA, or bus quarantine;
+- bounded command set and duration;
+- independent physical disconnect and continuous evidence recording.
+
+The existing Summon-only policy is a starting predicate, not proof that complete
+remote Summon control is safe or compatible.
+
+## Verification ladder
+
+Every active feature advances through these levels independently:
+
+1. **Source review** — exact repo/ref, license, handler, message assumptions, and
+   known limitations.
+2. **Pure unit test** — bit packing, DLC/mux rejection, counter/checksum, timing,
+   wraparound, and state transitions.
+3. **Community-data replay** — deterministic read-only or `would-send` result;
+   no physical driver.
+4. **Private target capture replay** — target-specific evidence with raw data kept
+   local.
+5. **Internal controller loopback** — exact bytes and queue behavior.
+6. **Isolated transceiver bench** — second logger, bounded TX, stop/cleanup, and
+   fault injection.
+7. **Disconnected-vehicle or controlled stationary evaluation** — only after a
+   separate explicit approval and recovery plan.
+8. **Vehicle validation** — exact software/profile evidence and read-back; never
+   inferred from a build or dashboard toggle.
+
+No public-road injection procedure is part of this roadmap.
+
+## Test matrix
+
+| Layer | Required checks |
+| --- | --- |
+| Parser | candump variants, blank/comment lines, malformed payload, DLC mismatch, timestamp/order handling |
+| Decoder | bus, ID, DLC, mux, scaling, signedness, unavailable values, expiry, profile conflict |
+| Replay | deterministic state and `would-send`, no physical driver, drop/error accounting |
+| TX policy | missing/stale/contradictory state, arm expiry, mode change, disconnect, OTA, quarantine, abort |
+| Scheduler | rate/burst/cooldown, counter/checksum, cancellation, ambiguous result, per-bus attribution |
+| Self-test | MCP2515/TWAI internal loopback, queue pressure, one-bus failure, cleanup |
+| OTA | authorization, manifest/board mismatch, interrupted transfer, bad digest/signature, failed boot, rollback |
+| Control plane | BLE/Web auth, replayed request, duplicate request, permission separation, secret redaction |
+| Recorder | RX/TX decisions, health transitions, OTA lifecycle, self-test, storage pressure, ACK/read-back |
+| Privacy | raw-log Git scan, credential scan, sanitized fixture provenance, bounded cloud summary |
+
+## Stop conditions
+
+Stop promotion of a feature when any of these occurs:
+
+- frame layout, target bus, counter, checksum, cadence, or profile remains
+  ambiguous;
+- a community claim conflicts with the observed dataset;
+- source tests pass but replay cannot reproduce the claimed state transition;
+- the driver or control path can bypass policy/audit;
+- a blocked action still produces a physical attempt;
+- OTA cannot prove board identity, boot health, and rollback;
+- internal loopback or bench cleanup leaves pending TX;
+- required safety input is missing, stale, invalid, or contradictory;
+- the only proposed fix is widening filters, removing a gate, increasing a rate,
+  or retrying an uncertain state-changing command;
+- raw captures or credentials would need to be committed or sent to a cloud
+  service to continue.
+
+## Planned deliverables
+
+The implementation should be split into reviewable milestones rather than one
+large merge. Expected artifacts include:
+
+- hardware self-test module and Bench UI/API state;
+- candump replay adapter and local research-set runner;
+- decoder registry and confidence metadata;
+- central TX intent/policy/scheduler/audit modules;
+- per-bus health, RX-stall, and quarantine state;
+- device OTA transaction, boot confirmation, and rollback;
+- firmware capability manifest;
+- BLE owner authorization and private Web control integration;
+- disabled `.cantest`/rule-draft workflow;
+- sanitized fixtures plus provenance records;
+- updated dashboard, Support, recorder, maintenance, build, and safety docs.
+
+Each milestone must keep existing tests green, add a narrow regression test, run
+the exact T-2CAN firmware build, and report what remains unverified on physical
+hardware or a vehicle.
+
+## Current implementation boundary
+
+This roadmap does not mean the planned features are already shipped. Current
+implementation documentation remains authoritative until a milestone is built,
+tested, and read back. In particular:
+
+- device OTA signing/boot confirmation/rollback is still planned work;
+- hardware internal loopback on the actual T-2CAN has not been run;
+- `sqladm1n` data has been parsed and summarized locally but is not yet connected
+  to the complete firmware replay pipeline;
+- no live `0x247`, ULC, or automatic/Supervised Summon TX validation has occurred;
+- no vehicle OTA or physical CAN transmission was performed while creating this
+  document.

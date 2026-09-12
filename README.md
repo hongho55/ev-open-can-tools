@@ -70,6 +70,7 @@ After flashing an ESP32 dashboard board, connect to its hotspot and open `http:/
 - [Dashboard](https://ev-open-can-tools.github.io/ev-open-can-tools/docs/dashboard.html)
 - [Plugin system](https://ev-open-can-tools.github.io/ev-open-can-tools/docs/plugins.html)
 - [CAN safety and hands-on-wheel experiments](https://ev-open-can-tools.github.io/ev-open-can-tools/docs/nag-killer.html)
+- [T-2CAN Active FSD integration roadmap](docs/t2can-active-fsd-roadmap.md)
 - [ESP32 runtime optimization](https://ev-open-can-tools.github.io/ev-open-can-tools/docs/esp32-optimization.html)
 - [Release notes](CHANGELOG.md)
 

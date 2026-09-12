@@ -1,6 +1,6 @@
 # ev-open-can-tools documentation
 
-[Project home](../) · [Start onboarding](../onboarding/) · [Build and flash](building.md) · [Dashboard](dashboard.md) · [Onboarding guide](onboarding.md) · [Plugins](plugins.md) · [CAN safety](nag-killer.md) · [Runtime optimization](esp32-optimization.md) · [Field maintenance](vehicle-esp32-field-maintenance.md) · [Automatic sync](vehicle-automatic-sync.md) · [S26 Android gateway](../android-gateway/) · [Release notes](../CHANGELOG.md)
+[Project home](../) · [Start onboarding](../onboarding/) · [Build and flash](building.md) · [Dashboard](dashboard.md) · [Onboarding guide](onboarding.md) · [Plugins](plugins.md) · [CAN safety](nag-killer.md) · [Active FSD roadmap](t2can-active-fsd-roadmap.md) · [Runtime optimization](esp32-optimization.md) · [Field maintenance](vehicle-esp32-field-maintenance.md) · [Automatic sync](vehicle-automatic-sync.md) · [S26 Android gateway](../android-gateway/) · [Release notes](../CHANGELOG.md)
 
 ## Start here
 
@@ -26,6 +26,7 @@ New to the project? Use this order:
 | Observe traffic with SavvyCAN | [Dashboard -> GVRET](dashboard.md#savvycan-usb-serial) |
 | Create a CAN rule | [Plugin system](plugins.md) |
 | Understand hands-on-wheel/nag experiments | [CAN safety and testing](nag-killer.md) |
+| Review the planned active TX, OTA, replay, and self-test work | [T-2CAN Active FSD integration roadmap](t2can-active-fsd-roadmap.md) |
 | Improve firmware performance | [ESP32 runtime optimization](esp32-optimization.md) |
 | Contribute code or documentation | Read the repository instructions, then use the validation checklist in the optimization and safety pages |
 
