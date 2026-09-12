@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- ESP32 exposes the local, authenticated maintenance API over HTTP.
+         The Mac upload endpoint is required to use HTTPS. -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

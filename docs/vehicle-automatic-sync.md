@@ -40,7 +40,7 @@ before trusting the peer.
 
 ## What is implemented now
 
-`scripts/collect_vehicle_incidents.py` is a one-shot reference client for the local ESP32 evidence protocol. It exercises the same critical path that the future S26 worker must implement:
+`scripts/collect_vehicle_incidents.py` is a one-shot reference client for the local ESP32 evidence protocol. The `android-gateway` project now implements the first S26 worker slice using the same critical path:
 
 ```text
 GET /event_list
@@ -62,6 +62,13 @@ The client:
 - leaves the ESP32 incident unacknowledged when download or archive verification fails;
 - writes raw and metadata files with mode `0600`;
 - never sends the raw incident to Telegram or Oracle.
+
+The Android worker keeps the raw file in app-private storage, records only bounded
+metadata and a path in SQLite, and uses an upload lease so process death can be
+recovered. A Mac response is accepted only when it is JSON, names the exact event
+and hash, and reports `stored` or `already_stored`; only then does the queue enter
+`ACK_PENDING`. A later local discovery sends `/event_ack` and marks the queue item
+`ACKED` only after the ESP32 confirms it.
 
 Development-only example (keep credentials out of shell history and chat):
 
@@ -116,7 +123,7 @@ those are separate deployment and physical-device milestones.
 
 ## S26 automatic worker
 
-The future S26 app should use this durable state machine:
+The current Android app uses this durable state machine:
 
 ```text
 IDLE
@@ -130,7 +137,7 @@ QUEUED_LOCAL
 RELEASE_ESP32_NETWORK
   ↓ Internet/Tailscale available
 UPLOAD_TO_MAC
-  ↓ Mac durable commit + read-back response
+  ↓ Mac HTTPS durable commit + read-back response
 ACK_PENDING
   ↓ next ESP32-local session, or current session if still connected
 ACK_ESP32
@@ -140,7 +147,12 @@ DONE
 
 The app must survive process death, reboot, no Internet, ESP32 AP loss, Mac unavailability, and a lost upload response. A queue entry is complete only after the Mac's `event_id`, size, and SHA-256 commit result has been durably recorded on the S26. A failed or uncertain upload must be retried; it must never cause an early ESP32 ACK.
 
-The first Android version should use Wi-Fi/HTTP for event files. BLE is optional for a small health snapshot and should not be required for the event-transfer path. The app should not depend on simultaneous ESP32 Wi-Fi and normal Internet connectivity; finish the local download, release that network, then upload over the normal Internet path.
+The Android version uses Wi-Fi/HTTP for local event files and HTTPS for the Mac
+receiver. BLE is optional for a small health snapshot and is not required for the
+event-transfer path. If the ESP32 route has no Internet, the upload attempt fails
+closed and the durable queue remains for a later worker run with a normal Internet
+route; no early ACK is issued. Automatic hotspot activation and network handoff
+still require physical S26 verification.
 
 ## Mac mini receiver requirements
 
