@@ -30,6 +30,16 @@ struct CanDriver
     virtual void setMonitorAll(bool) {}
     virtual void clearPendingTransmit() {}
 
+    // Explicit, authenticated maintenance self-test. Implementations must not
+    // place a frame on an attached physical CAN bus.
+    virtual void selfTestJson(char *out, size_t outLen)
+    {
+        if (!out || outLen == 0)
+            return;
+        snprintf(out, outLen,
+                 "{\"supported\":false,\"passed\":false,\"reason\":\"unsupported\"}");
+    }
+
     bool sendAllowed(const CanFrame &frame) const
     {
         return !allowSendFrame || allowSendFrame(frame);

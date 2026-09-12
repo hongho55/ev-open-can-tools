@@ -26,11 +26,15 @@ The firmware shall have four explicit operating sessions:
 3. **Bench** — internal controller loopback and isolated transceiver tests. This
    session must not be confused with a vehicle Active session.
 4. **Maintenance** — device OTA, rollback, artifact verification, and post-boot
-   self-test. CAN TX is paused until the new image is confirmed healthy and the
-   user explicitly re-arms it.
+   self-test. CAN TX is paused while the image is applied and resumes from the
+   persisted desired state only after the normal startup and bus-health gates
+   become healthy again.
 
-Configuration may persist across reboot, but an **armed TX lease must not**.
-Neither a reboot nor a successful OTA may resume transmission automatically.
+Feature configuration and the user's master TX enabled/disabled choice persist
+across ordinary vehicle power cycles, watchdog resets, and successful OTA. A
+restart never bypasses startup freshness, CAN readiness, vehicle-state, AP,
+Summon-only, quarantine, or OTA gates: persisted enablement is desired state,
+not permission to transmit before those gates pass.
 
 ## Evidence baseline
 
@@ -72,7 +76,7 @@ community captures does not establish ECU acceptance or safe vehicle behavior.
 | OTA flashing | **Adopt** | P0 | Signed, board-bound, dual-partition device OTA with boot confirmation and rollback. |
 | BLE owner/key provisioning | **Adopt with scope restriction** | P1 | Provision a device-owner authorization key only. Never import or expose a Tesla drive/passive-entry key. |
 | Web-based remote CAN control | **Adopt with network and policy restrictions** | P1 | Private/local control transport that creates `TxIntent`; it never calls a CAN driver directly. |
-| Default TX activation | **Modify, do not adopt literally** | P0 | Feature configuration may persist, but first boot, reboot, disconnect, watchdog reset, and OTA always clear the volatile TX arm lease. |
+| Default TX activation | **Persist user choice behind safety gates** | P0 | The master enabled/disabled choice and feature configuration survive vehicle power cycles and OTA. Every boot blocks physical TX until startup freshness, CAN readiness, bus health, and feature-specific gates pass. |
 | `0x247` spoof | **Research and bench candidate** | P2 | Add RX decoding and dry-run correlation first. The available dataset has no `0x247` TX evidence. |
 | Nag killer actual TX | **Retain and harden** | P1/P2 | Keep existing bounded modes and policy; add research replay, scheduler ownership, and isolated bench verification. |
 | ULC unlock | **Deferred high-risk research** | P3 | Decoder and dry-run evidence first; no production enablement without authoritative format and target evidence. |
@@ -118,7 +122,7 @@ handler count.
 | Checksum/CRC research tooling | **Port as offline tooling** | P1 local analysis; recovered candidates remain untrusted until independently verified. |
 | Shared Flipper/ESP32 protocol-core idea | **Adopt architecturally** | P0/P1 one host-testable protocol core; do not import Flipper hardware/UI dependencies. |
 | Wi-Fi AP/STA settings, masked secrets, NVS persistence | **Retain equivalent and harden** | P1 owner authorization and read-back; secrets never enter snapshots or logs. |
-| Deep sleep and factory reset | **Retain/verify existing equivalent** | P1 lifecycle tests; wake/reset cannot restore a TX arm lease. |
+| Deep sleep and factory reset | **Retain/verify existing equivalent** | P1 lifecycle tests; ordinary wake/reset restores desired feature state but not stale safety observations. An explicit factory reset clears persisted state. |
 | Live counters, CRC errors, no-traffic warning, status display | **Retain and extend** | P0 per-bus health plus dashboard/BLE/Support parity. |
 | SD log rotation and bounded capture duration | **Port policy, adapt storage backend** | P1 recorder limits and explicit storage-pressure events. |
 
@@ -141,7 +145,7 @@ handler count.
 | Nav FSD Route | `0x3F8` | **Port as disabled module; P2.** |
 | Hands-Off UI flag | `0x3F8` | **Research; P3.** Do not treat a UI signal as sensor-level validation. |
 | Developer Mode | `0x3F8` | **Port as disabled diagnostic experiment; P2.** |
-| Force-LHD signal | `0x3F8` | **Do not promote; research record only.** Upstream reports no lane-side effect and planned removal. |
+| Force-LHD/RHD signal override | `0x3F8` | **Do not port.** Target deployments are left-hand-drive only, and upstream reports no lane-side effect from this UI signal. Preserve observed driving-side data only when another decoder needs it; never transmit an override. |
 | Telemetry Off | `0x3F8` | **Research only; P3.** It may itself be a detection signal. |
 | ScrollPress AP Engage | `0x3C2` mux 1 | **Research then Bench; P3.** HW4/profile-specific; explicit deny on unsupported HW. |
 | Track Mode request | `0x313` | **Port as Service/Bench-only module; P2.** Require checksum, stationary state, expiry, and read-back. |
@@ -289,8 +293,11 @@ Required tests:
 10. cancellation and cleanup when the user leaves Bench mode.
 
 Bench transceiver testing is a separate stage and requires a disconnected,
-isolated CAN fixture and a second logger. Internal loopback success is not proof
-that the transceiver, wiring, or vehicle path works.
+isolated CAN fixture and a second logger. MCP2515 CAN A supports controller
+internal loopback. ESP32-S3 TWAI CAN B has no isolated internal-loopback mode;
+its vehicle-connected self-test is therefore controller/status-only, while its
+TX/RX path is verified only on that isolated fixture. Neither result proves the
+vehicle path works.
 
 Acceptance:
 
@@ -354,8 +361,12 @@ Every `TxIntent` must carry:
 Rules:
 
 - Unknown, stale, contradictory, or unavailable safety state blocks the intent.
-- A control-channel disconnect expires the active lease.
-- Reboot, brownout, watchdog reset, and OTA clear the lease.
+- Control-channel disconnect cannot bypass an already closed safety gate or keep
+  a supervised, session-scoped action alive; persistent background features use
+  the stored master enable choice.
+- Reboot, brownout, watchdog reset, and OTA invalidate all observed freshness and
+  pending work. Stored enablement may resume only after fresh startup and
+  per-feature safety gates pass again.
 - A send result is recorded as requested, blocked, attempted, succeeded, or
   failed. A successful driver return is not ECU acceptance.
 - An ambiguous or timed-out state-changing action is reconciled from fresh state
@@ -371,7 +382,8 @@ Acceptance:
 - A blocked intent produces no physical attempt on either bus.
 - Combined-bus requests preserve separate per-bus results.
 - Pending work is cleared by mode change, stale state, OTA, quarantine, stop,
-  disconnect, and reboot simulation.
+  disconnect, and reboot simulation. Persistent desired state is evaluated from
+  scratch after recovery; queued frames are never restored.
 - Recorder output identifies the exact source, reason, bus, and attempt result.
 
 ### P0.4 Per-bus health, RX stall, and quarantine
@@ -395,8 +407,8 @@ Measure:
 
 A failed bus must not take down the other bus, USB diagnostics, recorder, or
 maintenance control plane. Quarantine blocks TX for that physical bus. Recovery
-may restore observation, but effective TX requires policy re-evaluation and a
-new arm decision; it must not resume silently.
+may restore observation, but effective TX requires policy re-evaluation against
+fresh state before the persisted desired enablement can resume.
 
 ### P0.5 Device OTA transaction and rollback
 

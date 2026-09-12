@@ -179,6 +179,13 @@ inline void noteCanInitialized()
     canInitializedMs.compare_exchange_strong(expected, millis(), std::memory_order_relaxed);
 }
 
+inline void invalidateCanFreshness()
+{
+    canInitializedMs.store(0, std::memory_order_relaxed);
+    canFrames.store(0, std::memory_order_relaxed);
+    lastCanFrameMs.store(0, std::memory_order_relaxed);
+}
+
 inline void noteTransmit(bool ok)
 {
     (ok ? txOk : txFail).fetch_add(1, std::memory_order_relaxed);

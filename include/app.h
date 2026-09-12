@@ -102,6 +102,8 @@ static void (*appPluginProcess)(const CanFrame &, CanDriver &) = nullptr;
 static void (*appDashboardTxObserver)(const CanFrame &, bool) = nullptr;
 static void (*appDashboardTxAttemptObserver)(const CanFrame &, bool, bool) = nullptr;
 static void (*appDashboardDecisionObserver)(bool, const char *) = nullptr;
+static bool (*appDashboardMasterTxEnabled)() = nullptr;
+static Shared<bool> appMaintenanceTxInhibit{false};
 
 static bool appInjectionReady()
 {
@@ -114,6 +116,18 @@ static bool appInjectionReady()
 
 static bool appCanTransmitAllowed(const CanFrame &)
 {
+#if defined(ESP32_DASHBOARD) && !defined(NATIVE_BUILD)
+    if (!appDashboardMasterTxEnabled || !appDashboardMasterTxEnabled())
+    {
+        if (appDashboardDecisionObserver) appDashboardDecisionObserver(false, "can_disabled");
+        return false;
+    }
+#endif
+    if (appMaintenanceTxInhibit)
+    {
+        if (appDashboardDecisionObserver) appDashboardDecisionObserver(false, "maintenance");
+        return false;
+    }
     if (!appInjectionReady())
     {
         if (appDashboardDecisionObserver) appDashboardDecisionObserver(false, "startup_or_can_stale");

@@ -266,7 +266,7 @@ public:
 #endif
         lock();
 #ifdef ESP_PLATFORM
-        if (!initialized_)
+        if (!sendAllowed(frame) || !initialized_)
         {
             unlock();
             if (onSendFrame)
@@ -302,10 +302,84 @@ public:
         if (!mutex_)
             return;
         lock();
-        if (initialized_)
-            mcp_.abortPendingTransmissions();
+        if (mcp_.abortPendingTransmissions() != MCP2515::ERROR_OK)
+            ++errorCount_;
         unlock();
 #endif
+    }
+
+    bool internalLoopbackSelfTest()
+    {
+#ifdef ESP_PLATFORM
+        if (!mutex_)
+            return false;
+        lock();
+        if (!initialized_)
+        {
+            unlock();
+            return false;
+        }
+
+        mcp_.abortPendingTransmissions();
+        bool entered = mcp_.setConfigMode() == MCP2515::ERROR_OK &&
+                       configureAcceptAll() &&
+                       mcp_.setLoopbackMode() == MCP2515::ERROR_OK;
+        can_frame sent = {};
+        sent.can_id = 0x5A5;
+        sent.can_dlc = 8;
+        const uint8_t pattern[8] = {0x54, 0x32, 0x43, 0x41, 0x4E, 0xA5, 0x5A, 0x01};
+        memcpy(sent.data, pattern, sizeof(pattern));
+        bool passed = entered && mcp_.sendMessage(&sent) == MCP2515::ERROR_OK;
+        can_frame received = {};
+        if (passed)
+        {
+            passed = false;
+            const uint32_t started = millis();
+            while (millis() - started < 25)
+            {
+                if (mcp_.readMessage(&received) == MCP2515::ERROR_OK)
+                {
+                    passed = received.can_id == sent.can_id &&
+                             received.can_dlc == sent.can_dlc &&
+                             memcmp(received.data, sent.data, sizeof(pattern)) == 0;
+                    break;
+                }
+                delay(1);
+            }
+        }
+
+        bool restored = mcp_.reset() == MCP2515::ERROR_OK &&
+                        mcp_.setBitrate(CAN_500KBPS, MCP_CRYSTAL_FREQ) == MCP2515::ERROR_OK;
+        if (restored)
+        {
+            if (monitorAll_ || exactFilterCount_ == 0)
+                restored = configureAcceptAll();
+            else if (exactFilterCount_ > 6)
+                restored = configureGroupedFilters();
+            else
+                restored = configureExactFiltersLocked();
+        }
+        const bool normalRestored = mcp_.setNormalMode() == MCP2515::ERROR_OK;
+        restored = restored && normalRestored;
+        initialized_ = restored;
+        if (!passed || !restored)
+            ++errorCount_;
+        unlock();
+        return passed && restored;
+#else
+        return false;
+#endif
+    }
+
+    void selfTestJson(char *out, size_t outLen) override
+    {
+        if (!out || outLen == 0)
+            return;
+        const bool passed = internalLoopbackSelfTest();
+        snprintf(out, outLen,
+                 "{\"supported\":true,\"mode\":\"controller_internal_loopback\","
+                 "\"physicalTx\":false,\"passed\":%s}",
+                 passed ? "true" : "false");
     }
 
     MCP2515 &mcp() { return mcp_; }
@@ -446,6 +520,23 @@ private:
         ok &= mcp_.setFilter(MCP2515::RXF3, false, base1) == MCP2515::ERROR_OK;
         ok &= mcp_.setFilter(MCP2515::RXF4, false, base1) == MCP2515::ERROR_OK;
         ok &= mcp_.setFilter(MCP2515::RXF5, false, base1) == MCP2515::ERROR_OK;
+        return ok;
+    }
+
+    bool configureExactFiltersLocked()
+    {
+        if (exactFilterCount_ == 0)
+            return configureAcceptAll();
+        const uint32_t *ids = exactFilterIds_;
+        const uint8_t count = exactFilterCount_;
+        bool ok = mcp_.setFilterMask(MCP2515::MASK0, false, 0x7FF) == MCP2515::ERROR_OK;
+        ok &= mcp_.setFilter(MCP2515::RXF0, false, ids[0]) == MCP2515::ERROR_OK;
+        ok &= mcp_.setFilter(MCP2515::RXF1, false, count > 1 ? ids[1] : ids[0]) == MCP2515::ERROR_OK;
+        ok &= mcp_.setFilterMask(MCP2515::MASK1, false, 0x7FF) == MCP2515::ERROR_OK;
+        ok &= mcp_.setFilter(MCP2515::RXF2, false, count > 2 ? ids[2] : ids[0]) == MCP2515::ERROR_OK;
+        ok &= mcp_.setFilter(MCP2515::RXF3, false, count > 3 ? ids[3] : ids[0]) == MCP2515::ERROR_OK;
+        ok &= mcp_.setFilter(MCP2515::RXF4, false, count > 4 ? ids[4] : ids[0]) == MCP2515::ERROR_OK;
+        ok &= mcp_.setFilter(MCP2515::RXF5, false, count > 5 ? ids[5] : ids[0]) == MCP2515::ERROR_OK;
         return ok;
     }
 

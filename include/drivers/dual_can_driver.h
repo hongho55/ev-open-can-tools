@@ -62,6 +62,20 @@ public:
         canB_.clearPendingTransmit();
     }
 
+    void selfTestJson(char *out, size_t outLen) override
+    {
+        if (!out || outLen == 0)
+            return;
+        char canAResult[192] = {};
+        char canBResult[224] = {};
+        canA_.selfTestJson(canAResult, sizeof(canAResult));
+        canB_.selfTestJson(canBResult, sizeof(canBResult));
+        snprintf(out, outLen,
+                 "{\"type\":\"t2can_self_test_v1\",\"physicalTx\":false,"
+                 "\"canA\":%s,\"canB\":%s}",
+                 canAResult, canBResult);
+    }
+
     void setSimLoopback(bool enabled) override
     {
         canA_.setSimLoopback(enabled);
@@ -112,6 +126,12 @@ public:
     {
         if (!sendAllowed(frame))
             return reportDenied(frame);
+
+        // Child drivers re-check this same gate while holding their physical
+        // controller locks. This closes the race with maintenance quiesce
+        // after the aggregate pre-check but before the actual TX register call.
+        canA_.allowSendFrame = allowSendFrame;
+        canB_.allowSendFrame = allowSendFrame;
 
         const DualCanRouting::Targets targets = DualCanRouting::targetsForBus(frame.bus);
         if (!targets.canA && !targets.canB)

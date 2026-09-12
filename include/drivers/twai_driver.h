@@ -181,6 +181,15 @@ public:
     bool sendWithAttempt(const CanFrame &frame, bool &attempted) override
     {
         attempted = false;
+        if (!sendAllowed(frame) || frame.id > 0x7FF || frame.dlc > 8)
+        {
+            if (onSendFrame)
+                onSendFrame(frame, false);
+            if (onSendAttempt)
+                onSendAttempt(frame, false, false);
+            return false;
+        }
+
         if (simLoopback_)
         {
             // Dev/test mode: pretend the frame went out so TX counters/sniffer
@@ -192,16 +201,8 @@ public:
             return true;
         }
 
-        if (!sendAllowed(frame) || frame.id > 0x7FF || frame.dlc > 8)
-        {
-            if (onSendFrame)
-                onSendFrame(frame, false);
-            if (onSendAttempt)
-                onSendAttempt(frame, false, false);
-            return false;
-        }
         lock();
-        if (!driverOK_)
+        if (!sendAllowed(frame) || !driverOK_)
         {
             unlock();
             if (onSendFrame)
@@ -265,6 +266,18 @@ public:
         if (driverInstalled_)
             twai_clear_transmit_queue();
         unlock();
+    }
+
+    void selfTestJson(char *out, size_t outLen) override
+    {
+        if (!out || outLen == 0)
+            return;
+        const bool controllerReady = ready();
+        snprintf(out, outLen,
+                 "{\"supported\":true,\"mode\":\"controller_status_only\","
+                 "\"physicalTx\":false,\"passed\":%s,"
+                 "\"reason\":\"twai_has_no_isolated_internal_loopback\"}",
+                 controllerReady ? "true" : "false");
     }
 
     void diagnosticsJson(char *out, size_t outLen) const override

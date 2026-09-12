@@ -107,6 +107,7 @@ public:
 
     ERROR setConfigMode() { return setMode(CANCTRL_REQOP_CONFIG); }
     ERROR setNormalMode() { return setMode(CANCTRL_REQOP_NORMAL); }
+    ERROR setLoopbackMode() { return setMode(CANCTRL_REQOP_LOOPBACK); }
 
     ERROR setFilterMask(MASK mask, bool ext, uint32_t id)
     {
@@ -163,12 +164,13 @@ public:
         return ERROR_ALLTXBUSY;
     }
 
-    void abortPendingTransmissions()
+    ERROR abortPendingTransmissions()
     {
         ioError_ = false;
         bitModify(MCP_TXB0CTRL, TXB_TXREQ, 0);
         bitModify(MCP_TXB1CTRL, TXB_TXREQ, 0);
         bitModify(MCP_TXB2CTRL, TXB_TXREQ, 0);
+        return ioError_ ? ERROR_FAIL : ERROR_OK;
     }
 
     uint8_t getErrorFlags()
@@ -213,6 +215,7 @@ private:
     static constexpr uint8_t CANCTRL_REQOP = 0xE0;
     static constexpr uint8_t CANSTAT_OPMOD = 0xE0;
     static constexpr uint8_t CANCTRL_REQOP_NORMAL = 0x00;
+    static constexpr uint8_t CANCTRL_REQOP_LOOPBACK = 0x40;
     static constexpr uint8_t CANCTRL_REQOP_CONFIG = 0x80;
     static constexpr uint8_t MCP_RXF0SIDH = 0x00;
     static constexpr uint8_t MCP_RXF1SIDH = 0x04;

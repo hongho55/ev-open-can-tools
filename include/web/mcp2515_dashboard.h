@@ -4042,6 +4042,8 @@ static void handleGvretStop()
 }
 #endif
 
+static void dashResumeTransmitAfterOtaFailure();
+
 static void handleOtaResult()
 {
     if (!server.authenticate(DASH_OTA_USER, DASH_OTA_PASS))
@@ -4060,23 +4062,77 @@ static void handleOtaResult()
     }
     else
     {
+        dashResumeTransmitAfterOtaFailure();
         dashLog("[OTA] Upload FAILED");
     }
 }
 
 static bool manualOtaAccepted = false;
 
+// OTA is a temporary maintenance gate, not a configuration change. Preserve
+// the user's persisted master enable choice, but discard every queued or
+// periodic transmission before Update can start. After reboot, the normal
+// startup/CAN freshness gates decide when that desired state becomes effective.
+static void dashQuiesceTransmitForOta(const char *source)
+{
+    appMaintenanceTxInhibit = true;
+    pluginResetPeriodicEmit();
+    if (dashDriver)
+        dashDriver->clearPendingTransmit();
+    if (appDashboardDecisionObserver)
+        appDashboardDecisionObserver(false, "device_ota");
+    String message = "[OTA] TX paused and pending work cleared";
+    if (source && *source)
+        message += String(" via ") + source;
+    dashLog(message);
+}
+
+static void dashResumeTransmitAfterOtaFailure()
+{
+    appMaintenanceTxInhibit = false;
+}
+
+class DashMaintenanceCleanupGuard
+{
+public:
+    explicit DashMaintenanceCleanupGuard(bool invalidateFreshness = false)
+        : invalidateFreshness_(invalidateFreshness) {}
+
+    ~DashMaintenanceCleanupGuard()
+    {
+        if (invalidateFreshness_)
+        {
+            RuntimeDiagnostics::invalidateCanFreshness();
+            if (dashDriver && dashDriver->ready())
+                RuntimeDiagnostics::noteCanInitialized();
+        }
+        if (!keepInhibited_)
+            dashResumeTransmitAfterOtaFailure();
+    }
+
+    void keepInhibited() { keepInhibited_ = true; }
+
+private:
+    bool invalidateFreshness_ = false;
+    bool keepInhibited_ = false;
+};
+
 static void handleOtaUpload()
 {
     if (!server.authenticate(DASH_OTA_USER, DASH_OTA_PASS))
         return;
+    DashMaintenanceCleanupGuard cleanup;
     HTTPUpload &upload = server.upload();
     if (upload.status == UPLOAD_FILE_START)
     {
         dashLog("[OTA] Receiving: " + String(upload.filename.c_str()));
+        dashQuiesceTransmitForOta("web_upload");
         manualOtaAccepted = Update.begin(upload.totalSize);
         if (!manualOtaAccepted)
+        {
+            dashResumeTransmitAfterOtaFailure();
             dashLog("[OTA] Begin failed");
+        }
     }
     else if (upload.status == UPLOAD_FILE_WRITE)
     {
@@ -4084,6 +4140,7 @@ static void handleOtaUpload()
         {
             manualOtaAccepted = false;
             Update.abort();
+            dashResumeTransmitAfterOtaFailure();
             dashLog("[OTA] Write error");
         }
     }
@@ -4094,7 +4151,10 @@ static void handleOtaUpload()
         if (accepted && Update.end(true))
             dashLog("[OTA] Done: " + String(upload.totalSize) + " bytes");
         else
+        {
+            dashResumeTransmitAfterOtaFailure();
             dashLog("[OTA] End failed");
+        }
     }
     else if (upload.status == UPLOAD_FILE_ABORTED)
     {
@@ -4102,8 +4162,40 @@ static void handleOtaUpload()
         manualOtaAccepted = false;
         if (accepted)
             Update.abort();
+        dashResumeTransmitAfterOtaFailure();
         dashLog("[OTA] Upload aborted");
     }
+    if (manualOtaAccepted || (Update.isFinished() && !Update.hasError()))
+        cleanup.keepInhibited();
+}
+
+static void handleCanSelfTest()
+{
+    if (!server.authenticate(DASH_OTA_USER, DASH_OTA_PASS))
+    {
+        server.requestAuthentication();
+        return;
+    }
+    if (Update.isRunning())
+    {
+        server.send(409, "application/json",
+                    "{\"ok\":false,\"error\":\"OTA in progress\"}");
+        return;
+    }
+
+    appMaintenanceTxInhibit = true;
+    DashMaintenanceCleanupGuard cleanup(true);
+    pluginResetPeriodicEmit();
+    if (dashDriver)
+        dashDriver->clearPendingTransmit();
+    char result[640] = {};
+    if (dashDriver)
+        dashDriver->selfTestJson(result, sizeof(result));
+    else
+        snprintf(result, sizeof(result),
+                 "{\"supported\":false,\"passed\":false,\"reason\":\"driver_unavailable\"}");
+    dashLog("[SELFTEST] CAN controller test completed without physical TX");
+    server.send(200, "application/json", String("{\"ok\":true,\"result\":") + result + "}");
 }
 
 // ── PLUGIN MANAGEMENT ───────────────────────────────────────────
@@ -5970,8 +6062,11 @@ static void handleUpdateInstall()
     dashLog(contentLength > 0 ? "[OTA] Downloading " + String(contentLength) + " bytes..."
                               : "[OTA] Downloading chunked firmware...");
 
+    dashQuiesceTransmitForOta("web_install");
+    DashMaintenanceCleanupGuard cleanup;
     if (!Update.begin(contentLength > 0 ? static_cast<size_t>(contentLength) : UPDATE_SIZE_UNKNOWN))
     {
+        dashResumeTransmitAfterOtaFailure();
         dashLog("[OTA] Update.begin failed: " + String(Update.errorString()));
         http.end();
         server.send(500, "application/json", "{\"ok\":false,\"error\":\"OTA initialization failed\"}");
@@ -5986,12 +6081,14 @@ static void handleUpdateInstall()
     {
         dashLog("[OTA] Written " + String(written) + " of " + String(contentLength) + " bytes: " + String(Update.errorString()));
         Update.abort();
+        dashResumeTransmitAfterOtaFailure();
         server.send(500, "application/json", "{\"ok\":false,\"error\":\"Incomplete firmware download\"}");
         return;
     }
 
     if (!Update.end(true))
     {
+        dashResumeTransmitAfterOtaFailure();
         dashLog("[OTA] Update finalize failed: " + String(Update.errorString()));
         server.send(500, "application/json", "{\"ok\":false,\"error\":\"Firmware validation failed\"}");
         return;
@@ -5999,6 +6096,7 @@ static void handleUpdateInstall()
 
     if (!Update.isFinished())
     {
+        dashResumeTransmitAfterOtaFailure();
         dashLog("[OTA] Update not finished");
         server.send(500, "application/json", "{\"ok\":false,\"error\":\"Firmware update did not finish\"}");
         return;
@@ -6006,6 +6104,7 @@ static void handleUpdateInstall()
 
     dashLog("[OTA] Update successful! Rebooting...");
     server.send(200, "application/json", "{\"ok\":true,\"reboot\":true}");
+    cleanup.keepInhibited();
     delay(1000);
     ESP.restart();
 }
@@ -6117,8 +6216,11 @@ static void performAutoUpdate()
         return;
     }
     int len = http2.getSize();
+    dashQuiesceTransmitForOta("auto_update");
+    DashMaintenanceCleanupGuard cleanup;
     if (!Update.begin(len > 0 ? static_cast<size_t>(len) : UPDATE_SIZE_UNKNOWN))
     {
+        dashResumeTransmitAfterOtaFailure();
         dashLog("[AUTO-OTA] Update.begin failed: " + String(Update.errorString()));
         http2.end();
         return;
@@ -6130,14 +6232,17 @@ static void performAutoUpdate()
     {
         dashLog("[AUTO-OTA] Written " + String(written) + "/" + String(len) + " bytes: " + String(Update.errorString()));
         Update.abort();
+        dashResumeTransmitAfterOtaFailure();
         return;
     }
     if (!Update.end(true))
     {
+        dashResumeTransmitAfterOtaFailure();
         dashLog("[AUTO-OTA] Finalize failed: " + String(Update.errorString()));
         return;
     }
     dashLog("[AUTO-OTA] Update successful! Rebooting...");
+    cleanup.keepInhibited();
     delay(1000);
     ESP.restart();
 }
@@ -6416,6 +6521,7 @@ static void mcpDashboardSetup(CarManagerBase *handler, CanDriver *driver)
     appDashboardTxObserver = mcpDashOnTxFrame;
     appDashboardTxAttemptObserver = mcpDashOnTxAttemptFrame;
     appDashboardDecisionObserver = mcpDashOnInjectionDecision;
+    appDashboardMasterTxEnabled = []() { return static_cast<bool>(canActive); };
     pluginSetDiagnosticsLogger([](const char *message)
                                { dashLog(String(message)); });
     dashResetWriteProbe();
@@ -6485,11 +6591,17 @@ static void mcpDashboardSetup(CarManagerBase *handler, CanDriver *driver)
     ArduinoOTA.setHostname("ev-open-can-tools");
     ArduinoOTA.setPassword(DASH_OTA_PASS);
     ArduinoOTA.onStart([]()
-                       { dashLog("[OTA] Starting..."); });
+                       {
+                           dashQuiesceTransmitForOta("arduino_ota");
+                           dashLog("[OTA] Starting...");
+                       });
     ArduinoOTA.onEnd([]()
                      { dashLog("[OTA] Done -- rebooting"); });
     ArduinoOTA.onError([](ota_error_t e)
-                       { dashLog("[OTA] Error: " + String(e)); });
+                       {
+                           dashResumeTransmitAfterOtaFailure();
+                           dashLog("[OTA] Error: " + String(e));
+                       });
     ArduinoOTA.begin();
 
     server.on("/", HTTP_GET, handleRoot);
@@ -6515,6 +6627,7 @@ static void mcpDashboardSetup(CarManagerBase *handler, CanDriver *driver)
 #endif
     server.on("/update", HTTP_POST, handleOtaResult, handleOtaUpload);
     server.on("/diagnostics_detail", HTTP_GET, handleDiagnosticDetails);
+    server.on("/can_self_test", HTTP_POST, handleCanSelfTest);
     server.on("/event_control", HTTP_POST, handleEventControl);
     server.on("/event_list", HTTP_GET, handleEventList);
     server.on("/event_download", HTTP_GET, handleEventDownload);
