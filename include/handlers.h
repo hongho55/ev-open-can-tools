@@ -748,6 +748,9 @@ struct NagHandler : public CarManagerBase
     Shared<uint8_t> nagMode{static_cast<uint8_t>(NagMode::ModeA)};
     Shared<uint8_t> nagHardwareMode{0};
     Shared<uint32_t> nagEchoCount{0};
+    // T-2CAN dashboard installs the common TxIntent scheduler here. Other
+    // targets retain their existing synchronous path until explicitly migrated.
+    bool (*submitTx)(const CanFrame &, CanDriver &, uint32_t) = nullptr;
 
     static constexpr uint32_t kTargetId = 0x370;
     static constexpr uint32_t kLegacyApStateId = 0x399;
@@ -879,7 +882,7 @@ struct NagHandler : public CarManagerBase
         uint16_t sum = echo.data[0] + echo.data[1] + echo.data[2] + echo.data[3] + echo.data[4] + echo.data[5] + echo.data[6];
         echo.data[7] = static_cast<uint8_t>((sum + 0x73) & 0xFF);
 
-        bool ok = driver.send(echo);
+        bool ok = submitTx ? submitTx(echo, driver, now) : driver.send(echo);
         if (ok)
         {
             framesSent++;

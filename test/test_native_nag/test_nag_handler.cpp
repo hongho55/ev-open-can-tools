@@ -506,6 +506,23 @@ void test_nag_mode_c_blocks_invalid_steering_context()
     TEST_ASSERT_EQUAL(0, mock.sent.size());
 }
 
+static bool denyScheduledNag(const CanFrame &, CanDriver &, uint32_t)
+{
+    return false;
+}
+
+void test_nag_scheduler_denial_never_reaches_driver()
+{
+    handler.setMode(static_cast<uint8_t>(NagMode::ModeA));
+    handler.submitTx = denyScheduledNag;
+    CanFrame f = makeEpasFrame(0, 0.33f, 0x01);
+    handler.handleMessageAt(f, mock, 100);
+
+    TEST_ASSERT_EQUAL(0, mock.sent.size());
+    TEST_ASSERT_EQUAL_UINT32(0, handler.framesSent);
+    TEST_ASSERT_EQUAL_UINT32(0, handler.nagEchoCount);
+}
+
 int main()
 {
     UNITY_BEGIN();
@@ -567,6 +584,7 @@ int main()
     RUN_TEST(test_nag_mode_c_injects_after_state2_delay_with_fresh_context);
     RUN_TEST(test_nag_mode_c_preserves_context_while_transmission_is_blocked);
     RUN_TEST(test_nag_mode_c_blocks_invalid_steering_context);
+    RUN_TEST(test_nag_scheduler_denial_never_reaches_driver);
 
     return UNITY_END();
 }

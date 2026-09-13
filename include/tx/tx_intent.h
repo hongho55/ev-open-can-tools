@@ -190,7 +190,8 @@ inline Result evaluate(const TxIntent &intent, const PolicyContext &context)
         return blocked(intent, Reason::InvalidRoute);
     if (intent.expectedId > 0x7ff || intent.expectedDlc > 8 ||
         intent.frame.id != intent.expectedId || intent.frame.dlc != intent.expectedDlc ||
-        intent.frame.bus != intent.semanticBus)
+        intent.frame.bus != intent.semanticBus ||
+        intent.frame.physicalBus != intent.physicalBus)
         return blocked(intent, Reason::FrameMismatch);
     if (intent.mux.present &&
         (intent.mux.byte >= intent.frame.dlc ||
@@ -199,8 +200,12 @@ inline Result evaluate(const TxIntent &intent, const PolicyContext &context)
     if (intent.counter == CounterStrategy::Unknown ||
         intent.checksum == ChecksumStrategy::Unknown)
         return blocked(intent, Reason::UnknownIntegrityStrategy);
-    // right-stalk/Park remains read-only until independently qualified.
-    if (intent.expectedId == 0x229) return blocked(intent, Reason::SemanticDeny);
+    // Research-only IDs remain non-transmittable regardless of producer.  This
+    // is the authoritative boundary for built-ins, plugins and control planes;
+    // parser/UI allowlists must not be able to weaken it.
+    if (intent.expectedId == 0x229 || intent.expectedId == 0x247 ||
+        intent.expectedId == 0x3E9)
+        return blocked(intent, Reason::SemanticDeny);
 
     Result out;
     out.allowed = true;
@@ -226,19 +231,24 @@ public:
             const uint32_t sinceLast = context.nowMs - slot->lastAcceptedMs;
             if (intent.cadenceMs && sinceLast < intent.cadenceMs)
                 return blocked(intent, Reason::Cadence);
+            if (intent.cooldownMs &&
+                uint32_t(context.nowMs - slot->burstWindowStartMs) >= intent.cooldownMs)
+            {
+                slot->burstCount = 0;
+                slot->burstWindowStartMs = context.nowMs;
+            }
             if (slot->burstCount >= intent.maxBurst)
             {
                 if (!intent.cooldownMs)
                     return blocked(intent, Reason::BurstLimit);
-                if (sinceLast < intent.cooldownMs)
-                    return blocked(intent, Reason::Cooldown);
-                slot->burstCount = 0;
+                return blocked(intent, Reason::Cooldown);
             }
         }
 
         rememberRequest(intent.source, intent.requestId);
         slot->used = true;
         slot->featureId = intent.featureId;
+        if (slot->burstCount == 0) slot->burstWindowStartMs = context.nowMs;
         slot->lastAcceptedMs = context.nowMs;
         ++slot->burstCount;
         return result;
@@ -255,6 +265,7 @@ private:
     {
         uint16_t featureId = 0;
         uint32_t lastAcceptedMs = 0;
+        uint32_t burstWindowStartMs = 0;
         uint8_t burstCount = 0;
         bool used = false;
     };

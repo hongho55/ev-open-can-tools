@@ -40,6 +40,7 @@
 #include "chassis/telemetry_state.h"
 #include "chassis/event_recorder.h"
 #include "diagnostics/can_anomaly_tracker.h"
+#include "tx/tx_scheduler.h"
 #if defined(DRIVER_ESP32_EXT_MCP2515)
 #include "drivers/esp32_mcp2515_driver.h"
 #endif
@@ -281,6 +282,8 @@ static Chassis::TelemetryState dashTelemetry{Chassis::DasLayout::Unknown, 1500};
 static Chassis::LayoutRecommendation::Tracker dashLayoutTracker;
 static CanAnomaly::Tracker dashAnomalyTracker;
 static Chassis::EventRecorder dashRecorder;
+static TxControl::Scheduler dashTxScheduler;
+static uint32_t dashTxSessionNonce = 0;
 
 static bool dashAnomalyBlocksTx()
 {
@@ -862,6 +865,46 @@ static bool dashInjectionActive()
     return true;
 }
 
+static TxControl::PolicyContext dashTxPolicyContext(void *)
+{
+    TxControl::PolicyContext context;
+    context.nowMs = millis();
+    context.sessionNonce = dashTxSessionNonce;
+    context.session = dashInjectionActive() ? TxControl::Session::Active
+                                            : TxControl::Session::Observe;
+    context.masterEnabled = static_cast<bool>(canActive);
+    context.startupFresh = appInjectionReady();
+    context.vehicleFresh = context.startupFresh;
+    context.otaInhibit = static_cast<bool>(appMaintenanceTxInhibit);
+    context.controlAuthorized = true; // Built-in feature, not a remote principal.
+    context.controlConnected = true;
+    bool ready = false;
+    uint32_t errors = 0;
+    context.busHealthy = dashDriver &&
+                         dashDriver->physicalHealth(CAN_BUS_CAN_A, ready, errors) && ready;
+    return context;
+}
+
+static bool dashSubmitNagTx(const CanFrame &frame, CanDriver &driver, uint32_t)
+{
+    if (&driver != dashDriver)
+        return false;
+    TxControl::TxIntent intent = dashTxScheduler.prepare(
+        TxControl::Source::BuiltIn, 0x370, frame,
+        CAN_BUS_PARTY, CAN_BUS_CAN_A, TxControl::Session::Active, 100);
+    intent.cadenceMs = 5;
+    intent.maxBurst = 200;
+    intent.cooldownMs = 1000;
+    intent.counter = TxControl::CounterStrategy::IncrementObserved;
+    intent.checksum = TxControl::ChecksumStrategy::VerifiedGenerator;
+    intent.requirements = static_cast<uint16_t>(TxControl::RequireStartupFresh |
+                                                TxControl::RequireVehicleFresh);
+    const TxControl::Submission result = dashTxScheduler.submit(intent);
+    if (!result.policy.allowed && appDashboardDecisionObserver)
+        appDashboardDecisionObserver(false, TxControl::reasonName(result.policy.reason));
+    return result.driverSucceeded;
+}
+
 static bool dashCheckNagDisabled()
 {
     if (appDashboardDecisionObserver)
@@ -1005,8 +1048,25 @@ static bool dashApplyHw3OffsetSlew(CanFrame &modified, const CanFrame & /*origin
     return true;
 }
 
+static void dashInvalidateTxSession()
+{
+    uint32_t next = esp_random();
+    if (next == 0 || next == dashTxSessionNonce)
+    {
+        next = dashTxSessionNonce + 1;
+        if (next == 0)
+            next = 1;
+    }
+    dashTxSessionNonce = next;
+    dashTxScheduler.cancelAll();
+}
+
 static void dashApplyRuntimeState(bool refreshLed)
 {
+    // Runtime callers hold AppHandlerGuard; setup invokes this before CAN tasks
+    // start. Rotate the nonce as well as clearing admission history so an intent
+    // prepared under the previous configuration cannot be submitted afterward.
+    dashInvalidateTxSession();
     bypassTlsscRequirementRuntime = false;
     emergencyVehicleDetectionRuntime = false;
     isaSpeedChimeSuppressRuntime = false;
@@ -6579,6 +6639,7 @@ static void dashInitHandlers()
     // The active car handler already observes every original RX frame.
     // A second Nag callback would duplicate DAS/steering/0x370 in telemetry/logs.
     dashNagHandler.onFrame = nullptr;
+    dashNagHandler.submitTx = dashSubmitNagTx;
 }
 
 static void dashSwapHandler(uint8_t mode)
@@ -6664,6 +6725,10 @@ static void mcpDashboardSetup(CarManagerBase *handler, CanDriver *driver)
     dashHandler = handler;
     dashDriver = driver;
 #endif
+    dashTxSessionNonce = esp_random();
+    if (dashTxSessionNonce == 0)
+        dashTxSessionNonce = 1;
+    dashTxScheduler.bind(dashDriver, dashTxPolicyContext);
     appDashboardTxObserver = mcpDashOnTxFrame;
     appDashboardTxAttemptObserver = mcpDashOnTxAttemptFrame;
     appDashboardDecisionObserver = mcpDashOnInjectionDecision;

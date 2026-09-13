@@ -883,6 +883,25 @@ behavior.
 - Do not treat the `sqladm1n` dataset as Nag TX validation because it contains
   no `0x370` frames.
 
+Implemented minimal T-2CAN checkpoint:
+
+- `include/tx/tx_scheduler.h` adds a synchronous, no-queue admission boundary;
+  denied intents never call the driver, while the existing final driver gate
+  remains defense in depth.
+- The dashboard Nag `0x370` echo now declares BuiltIn source, Party/CAN A route,
+  5 ms minimum cadence, bounded one-second burst window, increment-observed
+  counter, and verified-generator checksum before submission.
+- Runtime configuration/profile transitions rotate a non-zero boot-session nonce
+  and clear admission history while serialized by the existing handler guard.
+  A stale pre-transition intent and a semantic/physical route mismatch are both
+  rejected before the driver.
+- Central policy authoritatively denies `0x229`, `0x247`, and `0x3E9` for every
+  intent source. This does not affect their read-only observation paths.
+- Strict scheduler/policy assertions passed, Nag native regression passed 39/39,
+  and `lilygo_t2can` built successfully. This is not isolated-bench or vehicle
+  validation; non-dashboard handlers and plugin TX remain on their existing
+  final-gated paths rather than being broadened in this checkpoint.
+
 ### P2.2 `0x247` Bench candidate
 
 Promotion prerequisites:

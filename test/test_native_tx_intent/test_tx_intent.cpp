@@ -30,6 +30,7 @@ static TxIntent intent(uint16_t feature, uint64_t requestId)
     out.frame.id = out.expectedId;
     out.frame.dlc = out.expectedDlc;
     out.frame.bus = out.semanticBus;
+    out.frame.physicalBus = out.physicalBus;
     return out;
 }
 
@@ -75,10 +76,14 @@ int main()
     maintenance.otaInhibit = true;
     assert(evaluate(valid, maintenance).reason == Reason::OtaInhibit);
 
-    TxIntent deniedSemantic = intent(2, 2);
-    deniedSemantic.expectedId = deniedSemantic.frame.id = 0x229;
-    deniedSemantic.semanticBus = deniedSemantic.frame.bus = CAN_BUS_VEH;
-    assert(evaluate(deniedSemantic, context(200)).reason == Reason::SemanticDeny);
+    const uint32_t deniedIds[] = {0x229U, 0x247U, 0x3E9U};
+    for (uint32_t deniedId : deniedIds)
+    {
+        TxIntent deniedSemantic = intent(2, deniedId);
+        deniedSemantic.expectedId = deniedSemantic.frame.id = deniedId;
+        deniedSemantic.semanticBus = deniedSemantic.frame.bus = CAN_BUS_VEH;
+        assert(evaluate(deniedSemantic, context(200)).reason == Reason::SemanticDeny);
+    }
 
     TxIntent badIntegrity = intent(3, 3);
     badIntegrity.checksum = ChecksumStrategy::Unknown;
