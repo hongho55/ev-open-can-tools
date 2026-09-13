@@ -410,6 +410,24 @@ maintenance control plane. Quarantine blocks TX for that physical bus. Recovery
 may restore observation, but effective TX requires policy re-evaluation against
 fresh state before the persisted desired enablement can resume.
 
+Implemented minimal checkpoint:
+
+- `DualCanDriver` owns one small health tracker per physical bus. Fresh RX is
+  required before TX; RX stall or three attempted TX failures quarantine only
+  the affected target bus.
+- TWAI publishes a monotonic fault epoch when it observes BUS_OFF/RECOVERING so
+  recovery cannot transmit on a still-fresh pre-fault timestamp.
+- `/status` and serial diagnostics expose state, quarantine, timestamps, and
+  stall/quarantine/recovery counts for CAN A and CAN B.
+- Regression acceptance passed: Python 94 tests, native 201 tests, T-2CAN build,
+  USB flash/read-back, S20-over-USB-ADB HTTP `/status`, and maintenance CAN
+  self-test with `physicalTx=false`. The observed no-traffic baseline was
+  `starting`, `quarantined=true`, `rx=0`, and `tx=0` independently on both buses.
+- Explicitly deferred by operator approval: vehicle-connected fresh-RX,
+  one-bus fault injection, and post-recovery fresh-RX acceptance. This remains a
+  required vehicle validation receipt and is not implied by the internal
+  self-test.
+
 ### P0.5 Device OTA transaction and rollback
 
 Device OTA and CAN-observed vehicle OTA are different state machines.

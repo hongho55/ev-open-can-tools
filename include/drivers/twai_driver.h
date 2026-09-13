@@ -115,6 +115,14 @@ public:
         return value;
     }
 
+    uint32_t faultEpoch() const
+    {
+        lock();
+        const uint32_t value = faultEpoch_;
+        unlock();
+        return value;
+    }
+
     void setSimLoopback(bool enabled) override { simLoopback_ = enabled; }
 
     bool read(CanFrame &frame) override
@@ -408,10 +416,16 @@ private:
         if (status.state == TWAI_STATE_RUNNING)
         {
             recoveryInProgress_ = false;
+            busFaultLatched_ = false;
             return true;
         }
         if (status.state == TWAI_STATE_BUS_OFF)
         {
+            if (!busFaultLatched_)
+            {
+                busFaultLatched_ = true;
+                ++faultEpoch_;
+            }
             uint32_t now = millis();
             if (!recoveryInProgress_ && now - lastRecovery_ >= BUSOFF_COOLDOWN_MS)
             {
@@ -430,6 +444,11 @@ private:
         }
         if (status.state == TWAI_STATE_RECOVERING)
         {
+            if (!busFaultLatched_)
+            {
+                busFaultLatched_ = true;
+                ++faultEpoch_;
+            }
             recoveryInProgress_ = true;
             return false;
         }
@@ -530,6 +549,8 @@ private:
     uint32_t maxTxQueueDepth_ = 0;
     bool recoveryInProgress_ = false;
     uint32_t lastTxFailLogMs_ = 0;
+    uint32_t faultEpoch_ = 0;
+    bool busFaultLatched_ = false;
     bool monitorAll_ = false;
     bool initRequested_ = false;
 };
