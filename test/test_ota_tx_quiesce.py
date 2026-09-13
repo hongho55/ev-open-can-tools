@@ -39,12 +39,20 @@ class OtaTxQuiesceTests(unittest.TestCase):
             r'dashQuiesceTransmitForOta\("arduino_ota"\);',
         )
 
-    def test_failed_ota_releases_maintenance_inhibit(self):
-        self.assertRegex(
+    def test_failed_ota_releases_only_non_rollback_maintenance_inhibit(self):
+        body = re.search(
+            r"static void dashResumeTransmitAfterOtaFailure\(\)\s*\{(.*?)\n\}",
             DASHBOARD,
-            r"static void dashResumeTransmitAfterOtaFailure\(\)\s*\{\s*"
-            r"appMaintenanceTxInhibit = false;",
+            re.S,
         )
+        if body is None:
+            self.fail("dashResumeTransmitAfterOtaFailure definition missing")
+        code = body.group(1)
+        self.assertIn("OtaBootState::Pending", code)
+        self.assertIn("OtaBootState::Rollback", code)
+        self.assertIn("appMaintenanceTxInhibit = false;", code)
+        self.assertLess(code.index("OtaBootState::Pending"), code.index("appMaintenanceTxInhibit = false;"))
+        self.assertLess(code.index("OtaBootState::Rollback"), code.index("appMaintenanceTxInhibit = false;"))
         for failure_marker in (
             'dashLog("[OTA] Begin failed")',
             'dashLog("[OTA] Write error")',

@@ -3149,6 +3149,17 @@ static void handleStatus()
         static_cast<unsigned long>(esp_get_free_heap_size()),
         static_cast<unsigned long>(RuntimeDiagnostics::injectionDelayRemainingMs(now)),
         static_cast<unsigned long>(CAN_LIVE_FRAME_THRESHOLD));
+    json.appendf(
+        ",\"otaBoot\":{\"state\":\"%s\",\"pending\":%s,\"preflightPassed\":%s,"
+        "\"confirmRemainingMs\":%lu,\"lastError\":%ld}",
+        RuntimeDiagnostics::otaBootStateName(),
+        RuntimeDiagnostics::otaBootState.load(std::memory_order_relaxed) ==
+                RuntimeDiagnostics::OtaBootState::Pending
+            ? "true"
+            : "false",
+        RuntimeDiagnostics::otaPreflightPassed.load(std::memory_order_relaxed) ? "true" : "false",
+        static_cast<unsigned long>(RuntimeDiagnostics::otaConfirmRemainingMs.load(std::memory_order_relaxed)),
+        static_cast<long>(RuntimeDiagnostics::otaLastError.load(std::memory_order_relaxed)));
 #endif
     json.appendf(
         ",\"telemetry\":{\"accepted\":%lu,\"lastMs\":%lu,"
@@ -4089,6 +4100,11 @@ static void dashQuiesceTransmitForOta(const char *source)
 
 static void dashResumeTransmitAfterOtaFailure()
 {
+    const RuntimeDiagnostics::OtaBootState otaState =
+        RuntimeDiagnostics::otaBootState.load(std::memory_order_relaxed);
+    if (otaState == RuntimeDiagnostics::OtaBootState::Pending ||
+        otaState == RuntimeDiagnostics::OtaBootState::Rollback)
+        return;
     appMaintenanceTxInhibit = false;
 }
 

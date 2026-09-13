@@ -6,11 +6,102 @@
 
 #ifdef ESP_PLATFORM
 #include "platform/espidf_runtime.h"
+#include "ota_boot_guard.h"
+#include <esp_ota_ops.h>
 #include <exception>
 #else
 #include <Arduino.h>
 #endif
 #include "app.h"
+
+#ifdef ESP_PLATFORM
+static OtaBootGuard appOtaBootGuard;
+
+static size_t appCountJsonToken(const char *text, const char *token)
+{
+    size_t count = 0;
+    if (!text || !token || !*token)
+        return count;
+    while ((text = strstr(text, token)) != nullptr)
+    {
+        ++count;
+        text += strlen(token);
+    }
+    return count;
+}
+
+static void appBeginOtaBootVerification()
+{
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    esp_ota_img_states_t imageState = ESP_OTA_IMG_UNDEFINED;
+    const esp_err_t stateErr = running ? esp_ota_get_state_partition(running, &imageState)
+                                       : ESP_ERR_NOT_FOUND;
+    const bool pending = stateErr == ESP_OK && imageState == ESP_OTA_IMG_PENDING_VERIFY;
+    appOtaBootGuard.begin(pending, millis());
+    RuntimeDiagnostics::otaBootState.store(
+        pending ? RuntimeDiagnostics::OtaBootState::Pending : RuntimeDiagnostics::OtaBootState::Normal,
+        std::memory_order_relaxed);
+    RuntimeDiagnostics::otaConfirmRemainingMs.store(appOtaBootGuard.remainingMs(millis()),
+                                                    std::memory_order_relaxed);
+    RuntimeDiagnostics::otaLastError.store(stateErr == ESP_OK ? ESP_OK : stateErr,
+                                           std::memory_order_relaxed);
+    if (pending)
+    {
+        appMaintenanceTxInhibit = true;
+        Serial.println("[OTA] Pending image verification; physical TX inhibited");
+    }
+}
+
+static void appCompleteOtaBootVerification()
+{
+    if (!appOtaBootGuard.pending())
+        return;
+
+    char selfTest[512] = {};
+    if (appDriver)
+        appDriver->selfTestJson(selfTest, sizeof(selfTest));
+#if defined(DRIVER_T2CAN_DUAL)
+    constexpr size_t requiredPassedResults = 2;
+#else
+    constexpr size_t requiredPassedResults = 1;
+#endif
+    const bool nvsOk = RuntimeDiagnostics::nvsFinalError.load(std::memory_order_relaxed) == ESP_OK;
+    const bool psramOk = RuntimeDiagnostics::psramVerified.load(std::memory_order_relaxed);
+    const bool driverOk = appDriver && appDriver->ready();
+    const bool selfTestOk = appCountJsonToken(selfTest, "\"passed\":true") >= requiredPassedResults &&
+                            strstr(selfTest, "\"physicalTx\":true") == nullptr;
+    const bool preflightPassed = nvsOk && psramOk && driverOk && selfTestOk;
+    RuntimeDiagnostics::otaPreflightPassed.store(preflightPassed, std::memory_order_relaxed);
+    RuntimeDiagnostics::otaConfirmRemainingMs.store(0, std::memory_order_relaxed);
+
+    const OtaBootGuard::Action action = appOtaBootGuard.evaluate(true, preflightPassed, millis());
+    if (action == OtaBootGuard::Action::Confirm)
+    {
+        const esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+        RuntimeDiagnostics::otaLastError.store(err, std::memory_order_relaxed);
+        if (err == ESP_OK)
+        {
+            appOtaBootGuard.markConfirmed();
+            RuntimeDiagnostics::otaBootState.store(RuntimeDiagnostics::OtaBootState::Confirmed,
+                                                   std::memory_order_relaxed);
+            appMaintenanceTxInhibit = false;
+            Serial.println("[OTA] Image confirmed after local boot preflight");
+            return;
+        }
+    }
+
+    appOtaBootGuard.markRollback();
+    RuntimeDiagnostics::otaBootState.store(RuntimeDiagnostics::OtaBootState::Rollback,
+                                           std::memory_order_relaxed);
+    appMaintenanceTxInhibit = true;
+    Serial.printf("[OTA] Boot preflight failed; rolling back (nvs=%s psram=%s driver=%s selfTest=%s)\n",
+                  nvsOk ? "ok" : "fail", psramOk ? "ok" : "fail",
+                  driverOk ? "ok" : "fail", selfTestOk ? "ok" : "fail");
+    const esp_err_t rollbackErr = esp_ota_mark_app_invalid_rollback_and_reboot();
+    RuntimeDiagnostics::otaLastError.store(rollbackErr, std::memory_order_relaxed);
+    Serial.printf("[OTA] Rollback request failed: %s\n", esp_err_to_name(rollbackErr));
+}
+#endif
 
 #ifdef DRIVER_MCP2515
 #include <SPI.h>
@@ -237,6 +328,7 @@ extern "C" void app_main(void)
     Serial.begin(115200);
     delay(50);
     RuntimeDiagnostics::begin();
+    appBeginOtaBootVerification();
     if (!GvretSerial::begin())
         Serial.println("[WARN] GVRET serial task failed to start");
 
@@ -250,9 +342,12 @@ extern "C" void app_main(void)
         nvsRecovered = nvsErr == ESP_OK;
     }
     RuntimeDiagnostics::noteNvsInitialization(nvsInitialErr, nvsErr, nvsRecovered);
+    if (nvsErr != ESP_OK && appOtaBootGuard.pending())
+        appCompleteOtaBootVerification();
     ESP_ERROR_CHECK(nvsErr);
 
     app_main_setup();
+    appCompleteOtaBootVerification();
     while (true)
     {
         RuntimeDiagnostics::noteMainLoop();

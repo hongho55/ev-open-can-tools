@@ -46,6 +46,7 @@ platformio_profile.h
 platformio_profile.dashboard.h
 sdkconfig.*
 !sdkconfig.defaults
+!sdkconfig.defaults.lilygo_t2can
 .pi-lens
 .claude
 managed_components/

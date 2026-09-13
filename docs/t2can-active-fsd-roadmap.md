@@ -459,6 +459,23 @@ Requirements:
 Existing HTTPS, board-artifact, streaming, and concurrency checks remain and are
 extended rather than replaced.
 
+Implemented rollback checkpoint:
+
+- T-2CAN enables the ESP-IDF bootloader rollback feature while retaining the
+  existing dual `ota_0`/`ota_1` partition layout.
+- A `PENDING_VERIFY` image establishes the maintenance TX inhibit before NVS,
+  dashboard, or CAN setup. Confirmation requires final NVS success, verified
+  PSRAM, a ready dual driver, and two non-physical controller self-test passes.
+- Failed preflight explicitly requests invalid-image rollback; dashboard cleanup
+  cannot release the inhibit while boot state is pending or rollback.
+- `/status` exposes the boot transaction state, preflight result, deadline, and
+  ESP-IDF error code.
+- Acceptance passed with Python 100 tests, native 206 tests, a T-2CAN build and
+  USB flash, followed by a real authenticated 1,427,072-byte OTA from the S20.
+  Serial showed TX quiesce, reboot, pending verification, and local confirmation;
+  `/status` read back `state=confirmed`, `preflightPassed=true`, `lastError=0`,
+  and zero TX attempts with both disconnected buses still quarantined.
+
 Vehicle OTA detection continues to pause active features according to policy.
 An `ignore vehicle OTA` override, if retained, must be explicit, session-scoped,
 visible, and audited; it cannot become a silent persistent default.

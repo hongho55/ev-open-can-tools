@@ -28,6 +28,14 @@ enum class NvsState : uint8_t
     Error,
 };
 
+enum class OtaBootState : uint8_t
+{
+    Normal,
+    Pending,
+    Confirmed,
+    Rollback,
+};
+
 struct StaticSystemInfo
 {
     esp_chip_info_t chip = {};
@@ -55,6 +63,10 @@ inline std::atomic<uint32_t> psramProbeBytes{0};
 inline std::atomic<NvsState> nvsState{NvsState::Unknown};
 inline std::atomic<int32_t> nvsInitialError{ESP_OK};
 inline std::atomic<int32_t> nvsFinalError{ESP_OK};
+inline std::atomic<OtaBootState> otaBootState{OtaBootState::Normal};
+inline std::atomic<uint32_t> otaConfirmRemainingMs{0};
+inline std::atomic<bool> otaPreflightPassed{false};
+inline std::atomic<int32_t> otaLastError{ESP_OK};
 inline uint32_t lastHeartbeatLogMs = 0;
 inline uint32_t lastNoCanWarningMs = 0;
 inline esp_reset_reason_t bootResetReason = ESP_RST_UNKNOWN;
@@ -159,6 +171,21 @@ inline const char *nvsStateName()
         return "error";
     default:
         return "unknown";
+    }
+}
+
+inline const char *otaBootStateName()
+{
+    switch (otaBootState.load(std::memory_order_relaxed))
+    {
+    case OtaBootState::Pending:
+        return "pending";
+    case OtaBootState::Confirmed:
+        return "confirmed";
+    case OtaBootState::Rollback:
+        return "rollback";
+    default:
+        return "normal";
     }
 }
 
