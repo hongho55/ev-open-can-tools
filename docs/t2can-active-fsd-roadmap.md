@@ -732,7 +732,11 @@ frames is reserved for the final focused device/vehicle session.**
 
 ### P1.7 BLE device-owner provisioning
 
-BLE provisioning authenticates control of this ESP32 device; it is not Tesla
+Security precondition completed:
+
+- BLE LE Secure Connections/bonding is treated only as transport security, not
+  as device-owner authorization.
+- The former arbitrary `send` par...[truncated]
 vehicle-key enrollment.
 
 Requirements:
