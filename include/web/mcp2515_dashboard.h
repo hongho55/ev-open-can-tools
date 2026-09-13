@@ -48,6 +48,15 @@
 #ifndef FIRMWARE_VERSION
 #define FIRMWARE_VERSION "unknown"
 #endif
+#ifndef FIRMWARE_GIT_REV
+#define FIRMWARE_GIT_REV "unknown"
+#endif
+#ifndef FIRMWARE_BUILD_ENV
+#define FIRMWARE_BUILD_ENV "unknown"
+#endif
+#ifndef FIRMWARE_ARTIFACT
+#define FIRMWARE_ARTIFACT "firmware.bin"
+#endif
 
 #ifndef DASH_SSID
 #error "Define -DDASH_SSID in build_flags (e.g. -DDASH_SSID=\\\"ADUnlock-1234\\\")"
@@ -3160,6 +3169,51 @@ static void handleStatus()
         RuntimeDiagnostics::otaPreflightPassed.load(std::memory_order_relaxed) ? "true" : "false",
         static_cast<unsigned long>(RuntimeDiagnostics::otaConfirmRemainingMs.load(std::memory_order_relaxed)),
         static_cast<long>(RuntimeDiagnostics::otaLastError.load(std::memory_order_relaxed)));
+    const uint8_t manifestConfig[] = {
+        static_cast<uint8_t>(hwMode), static_cast<uint8_t>(canActive ? 1 : 0),
+        static_cast<uint8_t>(apInjectionGate ? 1 : 0),
+        static_cast<uint8_t>(summonOnlyInjection ? 1 : 0),
+        static_cast<uint8_t>(dashDasLayoutOverride),
+        static_cast<uint8_t>(dashSpeedProfileAuto ? 1 : 0),
+        static_cast<uint8_t>(dashManualSpeedProfile), static_cast<uint8_t>(dashNagMode)};
+    uint32_t manifestDigest = 2166136261u;
+    for (uint8_t value : manifestConfig)
+    {
+        manifestDigest ^= value;
+        manifestDigest *= 16777619u;
+    }
+    const auto manifestOtaState = RuntimeDiagnostics::otaBootState.load(std::memory_order_relaxed);
+    const char *manifestSelfTest = RuntimeDiagnostics::otaPreflightPassed.load(std::memory_order_relaxed)
+                                       ? "passed"
+                                       : manifestOtaState == RuntimeDiagnostics::OtaBootState::Rollback
+                                             ? "failed"
+                                             : "not_run";
+    const char *manifestTxMode = appMaintenanceTxInhibit ? "maintenance"
+                                 : !canActive             ? "disabled"
+                                 : !appInjectionReady()   ? "blocked"
+                                                         : "active";
+#if defined(DRIVER_T2CAN_DUAL)
+    const char *manifestPhysicalBuses = "[\"canA\",\"canB\"]";
+    const char *manifestFeatures =
+        "[\"dashboard\",\"ota\",\"dual-can\",\"recorder\",\"self-test\"]";
+#else
+    const char *manifestPhysicalBuses = "[\"can\"]";
+    const char *manifestFeatures =
+        "[\"dashboard\",\"ota\",\"single-can\",\"recorder\",\"self-test\"]";
+#endif
+    json.appendf(
+        ",\"manifest\":{\"schema\":\"t2can-firmware-manifest-v1\","
+        "\"firmwareVersion\":\"%s\",\"gitRevision\":\"%s\","
+        "\"buildEnvironment\":\"%s\",\"boardProfile\":\"%s\","
+        "\"physicalBuses\":%s,\"semanticBuses\":[\"party\",\"vehicle\"],"
+        "\"features\":%s,\"decoderSchema\":\"t2can-decoder-v1\","
+        "\"txPolicy\":{\"version\":\"t2can-tx-policy-v1\",\"effectiveMode\":\"%s\"},"
+        "\"ota\":{\"artifact\":\"%s\",\"state\":\"%s\"},"
+        "\"selfTest\":\"%s\",\"configDigest\":\"%08lx\"}",
+        FIRMWARE_VERSION, FIRMWARE_GIT_REV, FIRMWARE_BUILD_ENV, FIRMWARE_BUILD_ENV,
+        manifestPhysicalBuses, manifestFeatures, manifestTxMode, FIRMWARE_ARTIFACT,
+        RuntimeDiagnostics::otaBootStateName(), manifestSelfTest,
+        static_cast<unsigned long>(manifestDigest));
 #endif
     json.appendf(
         ",\"telemetry\":{\"accepted\":%lu,\"lastMs\":%lu,"
@@ -4141,6 +4195,13 @@ static void handleOtaUpload()
     HTTPUpload &upload = server.upload();
     if (upload.status == UPLOAD_FILE_START)
     {
+        if (upload.filename != FIRMWARE_ARTIFACT)
+        {
+            manualOtaAccepted = false;
+            dashLog("[OTA] Rejected artifact: " + String(upload.filename.c_str()) +
+                    " expected " + String(FIRMWARE_ARTIFACT));
+            return;
+        }
         dashLog("[OTA] Receiving: " + String(upload.filename.c_str()));
         dashQuiesceTransmitForOta("web_upload");
         manualOtaAccepted = Update.begin(upload.totalSize);

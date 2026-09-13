@@ -376,7 +376,24 @@ if uses_dashboard:
         )
     env.Append(CPPDEFINES=[("FIRMWARE_ARTIFACT", f'\\"{artifact}\\"')])
 
-# Inject firmware version from VERSION file
+# Inject firmware version and immutable build identity.
 if version_path.exists():
     fw_version = version_path.read_text(encoding="utf-8").strip()
     env.Append(CPPDEFINES=[("FIRMWARE_VERSION", f'\\"{fw_version}\\"')])
+
+try:
+    git_revision = subprocess.run(
+        ["git", "rev-parse", "--short=12", "HEAD"],
+        cwd=str(project_dir),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+except (OSError, subprocess.CalledProcessError):
+    git_revision = "unknown"
+env.Append(
+    CPPDEFINES=[
+        ("FIRMWARE_GIT_REV", f'\\"{git_revision}\\"'),
+        ("FIRMWARE_BUILD_ENV", f'\\"{env["PIOENV"]}\\"'),
+    ]
+)
