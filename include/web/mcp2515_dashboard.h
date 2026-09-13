@@ -39,6 +39,7 @@
 #include "chassis/layout_recommendation.h"
 #include "chassis/telemetry_state.h"
 #include "chassis/event_recorder.h"
+#include "diagnostics/can_anomaly_tracker.h"
 #if defined(DRIVER_ESP32_EXT_MCP2515)
 #include "drivers/esp32_mcp2515_driver.h"
 #endif
@@ -278,6 +279,7 @@ static CanDriver *dashDriver = nullptr;
 // state never feeds a transmit path; it is only exposed through /status.
 static Chassis::TelemetryState dashTelemetry{Chassis::DasLayout::Unknown, 1500};
 static Chassis::LayoutRecommendation::Tracker dashLayoutTracker;
+static CanAnomaly::Tracker dashAnomalyTracker;
 static Chassis::EventRecorder dashRecorder;
 class DashRecorderConfigUpdate
 {
@@ -526,6 +528,7 @@ static void mcpDashOnFrame(const CanFrame &f)
     unsigned long now = millis();
     const bool telemetryAccepted = dashTelemetry.observe(f, now);
     dashLayoutTracker.observe(f, now);
+    dashAnomalyTracker.observe(f, now);
     dashRecorder.observe(f, now);
     const Chassis::TelemetrySnapshot telemetry = dashTelemetry.snapshot(now);
     if (telemetryAccepted && (f.id == 0x399 || f.id == 0x39B))
@@ -3083,6 +3086,7 @@ static void handleStatus()
     Chassis::TelemetrySnapshot telemetrySnapshot = {};
     Chassis::LayoutRecommendation::Evidence layoutEvidence = {};
     Chassis::LayoutRecommendation::Result layoutRecommendation = {};
+    CanAnomaly::Summary anomalySummary = {};
     bool recorderArmed = false, recorderFrozen = false, recorderUsingPsram = false;
     size_t recorderRawCount = 0, recorderStateCount = 0, recorderRawCapacity = 0, recorderStateCapacity = 0;
     uint32_t recorderCoverage = 0, recorderStateCoverage = 0, recorderDrops = 0;
@@ -3109,6 +3113,8 @@ static void handleStatus()
             static_cast<uint8_t>(dashDasLayoutOverride) == 2,
             static_cast<uint8_t>(dashDasLayoutOverride) == 3);
         layoutRecommendation = Chassis::LayoutRecommendation::recommend(layoutEvidence);
+        dashAnomalyTracker.tick(now);
+        anomalySummary = dashAnomalyTracker.summary();
         recorderArmed = dashRecorder.enabled();
         recorderFrozen = dashRecorder.frozen();
         recorderRawCount = dashRecorder.rawCount();
@@ -3176,6 +3182,29 @@ static void handleStatus()
                                    layoutRecommendation.alternatives[i]));
     }
     json.append("]}");
+    json.appendf(
+        ",\"anomaly\":{\"schema\":\"t2can-can-anomaly-v1\",\"flags\":%u,"
+        "\"events\":%lu,\"frames\":%lu,\"newIds\":%lu,\"dlcChanges\":%lu,"
+        "\"periodChanges\":%lu,\"bursts\":%lu,\"stalls\":%lu,\"recoveries\":%lu,"
+        "\"asymmetries\":%lu,\"echoMismatches\":%lu,\"capacityDrops\":%lu,"
+        "\"lastEventMs\":%lu,\"lastId\":%lu,\"lastPhysicalBus\":%u,"
+        "\"policyBlock\":%s,\"automaticMutation\":false}",
+        static_cast<unsigned>(anomalySummary.flags),
+        static_cast<unsigned long>(anomalySummary.events),
+        static_cast<unsigned long>(anomalySummary.frames),
+        static_cast<unsigned long>(anomalySummary.newIds),
+        static_cast<unsigned long>(anomalySummary.dlcChanges),
+        static_cast<unsigned long>(anomalySummary.periodChanges),
+        static_cast<unsigned long>(anomalySummary.bursts),
+        static_cast<unsigned long>(anomalySummary.stalls),
+        static_cast<unsigned long>(anomalySummary.recoveries),
+        static_cast<unsigned long>(anomalySummary.asymmetries),
+        static_cast<unsigned long>(anomalySummary.echoMismatches),
+        static_cast<unsigned long>(anomalySummary.capacityDrops),
+        static_cast<unsigned long>(anomalySummary.lastEventMs),
+        static_cast<unsigned long>(anomalySummary.lastId),
+        static_cast<unsigned>(anomalySummary.lastPhysicalBus),
+        anomalySummary.policyBlock ? "true" : "false");
 #ifdef ESP_PLATFORM
     json.appendf(
         ",\"runtime\":{\"uptimeMs\":%lu,\"canFrames\":%lu,\"canAgeMs\":%lu,"

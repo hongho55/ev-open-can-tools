@@ -842,6 +842,28 @@ Add local-only detection for:
 An anomaly creates evidence and may block a policy gate, but it does not generate
 an enabled TX rule or change layout/bitrate by itself.
 
+Implemented anomaly evidence path:
+
+- `include/diagnostics/can_anomaly_tracker.h` keeps a bounded 32-entry,
+  payload-free RX baseline keyed by CAN ID and physical bus.
+- It counts newly appearing IDs after warm-up, DLC changes, period shifts,
+  sub-2ms bursts, per-bus RX stall/recovery, one-sided bus presence, bounded
+  capacity exhaustion, and explicit TX/echo mismatches supplied by a future
+  matcher.
+- DLC changes, RX stalls, echo mismatches, and capacity exhaustion expose a
+  sticky `policyBlock`; anomalies never generate a TX rule or mutate layout or
+  bitrate.
+- The live RX path feeds the tracker and `/status` exposes compact schema
+  `t2can-can-anomaly-v1`, counters, last ID/physical bus, and policy-block state
+  without payload bytes.
+- The TX/echo comparison API is host-tested but is intentionally not fed fake
+  evidence: firmware integration waits for a real bounded echo matcher.
+
+Focused native assertions cover DLC/period/burst, stall/recovery, bus asymmetry,
+new IDs, exact/mismatched/missing echo, capacity, and payload-free summary. The
+BLE-enabled `lilygo_t2can` firmware build passes. Live status read-back is
+reserved for the final focused device session.
+
 ## P2 — active feature qualification
 
 P2 promotes one feature at a time. Each module needs its own decoder, fixtures,
