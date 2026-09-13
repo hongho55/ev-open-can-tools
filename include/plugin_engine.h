@@ -808,6 +808,11 @@ static bool pluginParseJson(const String &json, PluginData &out)
             r.muxMask = pluginDefaultMuxMask(r.mux);
         if (!pluginParseBus(rule["bus"], r.busMask))
             return false;
+        // HW4 0x3FD (decimal 1021) is a Chassis CAN message. Older catalog
+        // payloads omitted the bus field, so migrate those persisted/cached
+        // definitions instead of allowing an ANY rule to match Party CAN.
+        if (r.canId == 1021 && r.busMask == CAN_BUS_ANY)
+            r.busMask = CAN_BUS_CH;
         r.matchByte = 0;
         r.matchMask = 0;
         r.matchValue = 0;

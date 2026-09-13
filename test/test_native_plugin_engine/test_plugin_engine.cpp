@@ -228,6 +228,8 @@ void test_hw3_fsd_activation_rule_reports_diagnostics()
 
     MockDriver driver;
     CanFrame frame = {.id = 1021};
+    frame.bus = CAN_BUS_CH;
+    frame.physicalBus = CAN_BUS_CAN_B;
     frame.dlc = 8;
     frame.data[0] = 0x00;
     frame.data[1] = 0x00;
@@ -270,6 +272,12 @@ void test_invalid_plugin_fields_fail_closed()
 
 void test_long_fsd_catalog_name_and_chassis_bus_parse()
 {
+    PluginData migrated = {};
+    TEST_ASSERT_TRUE(pluginParseJson(
+        R"JSON({"name":"FSD Activation HW4 (without TLSSC bypass)","rules":[{"id":1021,"mux":0,"ops":[{"type":"set_bit","bit":46,"val":1},{"type":"set_bit","bit":60,"val":1}]}]})JSON",
+        migrated));
+    TEST_ASSERT_EQUAL_UINT8(CAN_BUS_CH, migrated.rules[0].busMask);
+
     PluginData plugin = {};
     TEST_ASSERT_TRUE(pluginParseJson(
         R"JSON({"name":"Emergency Vehicle Detection HW4 with FSD enabling","enabled":false,"rules":[{"id":1021,"bus":"CH","mux":0,"ops":[{"type":"set_bit","bit":46,"val":1},{"type":"set_bit","bit":60,"val":1}]}]})JSON",
