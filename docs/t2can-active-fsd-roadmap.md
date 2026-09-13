@@ -521,6 +521,20 @@ Implemented minimal checkpoint:
 - Private originals receive restrictive permissions and a content digest.
 - No capture may automatically create, install, enable, or execute a TX rule.
 
+Implemented minimal checkpoint:
+
+- Repository-local `private-evidence/`, `captures/`, and `incidents/` paths are
+  ignored; existing collectors continue to default outside the repository.
+- `scripts/extract_private_fixture.py` requires explicit CAN IDs, purpose, and
+  expected result; it supports bounded time windows and refuses oversized
+  selections.
+- Source SHA-256 and transformation metadata are retained without the source
+  path. Payload bytes are omitted by default and require an explicit option.
+- Generated fixtures force `send:false` and disabled installation state. Source
+  and output permissions are read back as `0600` (`0700` output directory).
+- Focused tests passed 4/4; a real CLI run reduced a synthetic incident to two
+  ordered `0x247` observations with no payload or identity leakage.
+
 ## P1 — controlled automation and broader decoding
 
 ### P1.1 Decoder registry and confidence model

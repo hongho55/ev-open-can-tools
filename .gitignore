@@ -51,3 +51,8 @@ sdkconfig.*
 .claude
 managed_components/
 dependencies.lock
+
+# Private vehicle evidence (use collectors' home-directory defaults)
+/private-evidence/
+/captures/
+/incidents/
