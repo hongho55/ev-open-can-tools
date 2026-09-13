@@ -498,6 +498,17 @@ include:
 The same manifest is used to reject an artifact built for a different board or
 feature profile.
 
+Implemented minimal checkpoint:
+
+- PlatformIO injects the 12-character Git revision and exact build environment.
+- `/status` exposes the compact manifest, effective TX mode, OTA state/artifact,
+  self-test state, and a non-secret digest of TX-relevant settings.
+- Manual OTA rejects a filename that does not match the build environment's
+  board-specific release artifact before TX quiesce or flash initialization.
+- The focused manifest contracts passed 4/4 and `lilygo_t2can` built successfully
+  from commit `c62aa87`. S20 OTA and `/status` read-back are explicitly deferred
+  to the next field-device session.
+
 ### P0.7 Private evidence and fixture policy
 
 - Raw community and vehicle captures remain private local artifacts.
