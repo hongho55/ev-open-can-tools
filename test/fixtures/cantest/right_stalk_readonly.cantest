@@ -1,0 +1,38 @@
+{
+  "schema": "t2can-cantest-v1",
+  "name": "right-stalk-read-only-deny",
+  "feature": "park_button_research",
+  "enabled": false,
+  "installed": false,
+  "send": false,
+  "target_bus": "vehicle",
+  "can_id": "0x229",
+  "dlc": 3,
+  "mux": null,
+  "cadence_ms": 10,
+  "counter_policy": "observed_only",
+  "checksum_policy": "observed_only",
+  "profile": "research_source_unverified",
+  "layout": "unverified",
+  "prerequisites": [
+    "vehicle_parked",
+    "vehicle_stationary",
+    "fresh_rx"
+  ],
+  "maximum_duration_ms": 500,
+  "abort_conditions": [
+    "brake_change",
+    "gear_not_park",
+    "rx_stale",
+    "can_quarantine",
+    "ota_active"
+  ],
+  "evidence": [
+    {
+      "ref": "https://github.com/sqladm1n/flipper-tesla-fsd",
+      "revision": "ccc62a1ecc8354520c070da6dfa7fea905211779",
+      "confidence": "observed"
+    }
+  ],
+  "mutation_diff": []
+}

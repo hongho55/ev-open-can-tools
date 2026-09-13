@@ -658,6 +658,23 @@ Automatic rule generation may create only:
 
 Promotion to an enabled rule is a separate reviewed action.
 
+Implemented P1 boundary:
+
+- `scripts/cantest_dry_run.py` accepts strict JSON `.cantest` profiles and runs
+  only `parse -> validate -> dry_run -> policy_simulation`.
+- Valid profiles must declare exact bus, vehicle profile, layout, ID, DLC, mux,
+  cadence, counter/checksum policy, prerequisites, bounded duration, aborts,
+  evidence, and a human-readable mutation diff. Unknown keys fail validation.
+- `enabled`, `installed`, and `send` must all be `false`; there is no CAN,
+  socket, serial, subprocess, scheduler, arm, install, or execute integration.
+- `0x229` is an explicit semantic deny (`park_button_tx_prohibited`). The
+  checked-in profile contains no payload or mutation and remains ineligible.
+- CLI read-back reports `physical_attempts=0`, `execution_supported=false`, and
+  `eligible=false`. Focused contract tests pass 5/5.
+
+Acceptance status: **complete through policy simulation only. Physical Bench
+execution remains a separate P2 implementation and review.**
+
 ### P1.5 Listen-only bitrate recommendation
 
 For each physical bus, probe candidate rates only in hardware listen-only mode.
