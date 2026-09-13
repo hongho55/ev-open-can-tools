@@ -551,6 +551,20 @@ Move signal definitions toward a table/registry that records:
 
 A display-only observation does not automatically become a permission gate.
 
+Implemented initial registry checkpoint:
+
+- `include/chassis/decoder_registry.h` is the metadata source for 16 existing
+  decoded signals, including bus, DLC, mux, extraction, scale/offset, signedness,
+  freshness, profile, source/evidence, confidence, and allowed use.
+- Existing decoder behavior remains stable; new research decoders must register
+  their evidence and use class here rather than adding undocumented switches.
+- `/status` manifest reads the registry schema and entry count directly from this
+  source. Registry entries cannot enable TX and the initial set contains no
+  `TxGeneration` use.
+- Native registry assertions passed by direct compile/run and `lilygo_t2can`
+  built successfully. S20 read-back remains deferred with the other field-device
+  checks.
+
 ### P1.2 `0x247`/`0x3E9` research replay
 
 First milestone:

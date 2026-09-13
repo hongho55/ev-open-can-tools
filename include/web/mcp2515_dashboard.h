@@ -35,6 +35,7 @@
 #include "bounded_text_writer.h"
 #include "can_helpers.h"
 #include "plugin_engine.h"
+#include "chassis/decoder_registry.h"
 #include "chassis/telemetry_state.h"
 #include "chassis/event_recorder.h"
 #if defined(DRIVER_ESP32_EXT_MCP2515)
@@ -3206,13 +3207,14 @@ static void handleStatus()
         "\"firmwareVersion\":\"%s\",\"gitRevision\":\"%s\","
         "\"buildEnvironment\":\"%s\",\"boardProfile\":\"%s\","
         "\"physicalBuses\":%s,\"semanticBuses\":[\"party\",\"vehicle\"],"
-        "\"features\":%s,\"decoderSchema\":\"t2can-decoder-v1\","
+        "\"features\":%s,\"decoderSchema\":\"%s\",\"decoderEntries\":%u,"
         "\"txPolicy\":{\"version\":\"t2can-tx-policy-v1\",\"effectiveMode\":\"%s\"},"
         "\"ota\":{\"artifact\":\"%s\",\"state\":\"%s\"},"
         "\"selfTest\":\"%s\",\"configDigest\":\"%08lx\"}",
         FIRMWARE_VERSION, FIRMWARE_GIT_REV, FIRMWARE_BUILD_ENV, FIRMWARE_BUILD_ENV,
-        manifestPhysicalBuses, manifestFeatures, manifestTxMode, FIRMWARE_ARTIFACT,
-        RuntimeDiagnostics::otaBootStateName(), manifestSelfTest,
+        manifestPhysicalBuses, manifestFeatures, Chassis::DecoderRegistry::kSchemaVersion,
+        static_cast<unsigned>(Chassis::DecoderRegistry::size()), manifestTxMode,
+        FIRMWARE_ARTIFACT, RuntimeDiagnostics::otaBootStateName(), manifestSelfTest,
         static_cast<unsigned long>(manifestDigest));
 #endif
     json.appendf(
