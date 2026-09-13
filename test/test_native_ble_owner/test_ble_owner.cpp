@@ -16,10 +16,12 @@ static Peer peer(uint8_t seed, bool secure = true)
     return out;
 }
 
-static Request request(uint64_t id, uint32_t issuedAt, uint32_t expiresAt)
+static Request request(uint64_t id, uint32_t issuedAt, uint32_t expiresAt,
+                       uint32_t generation = 1)
 {
     Request out;
     out.id = id;
+    out.generation = generation;
     out.issuedAtMs = issuedAt;
     out.expiresAtMs = expiresAt;
     return out;
@@ -66,13 +68,15 @@ int main()
                                   static_cast<uint8_t>(Diagnostics | Ota | CanArm | 0x80),
                                   1400) == Decision::Allowed);
     assert(auth.permissions() == kAllPermissions);
-    assert(auth.authorize(owner, CanArm, request(6, 1400, 2400), 1500) ==
+    assert(auth.authorize(owner, CanArm, request(6, 1400, 2400, 2), 1500) ==
            Decision::Allowed);
-    assert(auth.authorize(owner, Ota, request(7, 1400, 2400), 1500) ==
+    assert(auth.authorize(owner, Ota, request(7, 1400, 2400, 2), 1500) ==
            Decision::Allowed);
+    assert(auth.authorize(owner, Ota, request(70, 1400, 2400, 1), 1500) ==
+           Decision::InvalidRequest);
 
     const uint32_t generationBeforeRevoke = auth.generation();
-    assert(auth.revoke(owner, request(8, 1500, 2500), 1600) == Decision::Allowed);
+    assert(auth.revoke(owner, request(8, 1500, 2500, 2), 1600) == Decision::Allowed);
     Status revoked = auth.status(1600);
     assert(!revoked.enrolled);
     assert(!revoked.enrollmentOpen); // Revocation never reopens first enrollment.
@@ -98,7 +102,7 @@ int main()
     assert(!restored.ownerRecord().bonded);
     assert(restored.permissions() == static_cast<uint8_t>(Diagnostics | Admin));
     assert(restored.generation() == 41);
-    assert(restored.authorize(owner, Diagnostics, request(10, 200, 1200), 300) ==
+    assert(restored.authorize(owner, Diagnostics, request(10, 200, 1200, 41), 300) ==
            Decision::Allowed);
 
     Authorization tombstone;

@@ -207,10 +207,12 @@ static String bleOwnerStatusJson()
 static bool bleParseOwnerRequest(JsonObjectConst root, BleOwner::Request &request)
 {
     if (!root["requestId"].is<uint64_t>() ||
+        !root["ownerGeneration"].is<uint32_t>() ||
         !root["issuedAtMs"].is<uint32_t>() ||
         !root["expiresAtMs"].is<uint32_t>())
         return false;
     request.id = root["requestId"].as<uint64_t>();
+    request.generation = root["ownerGeneration"].as<uint32_t>();
     request.issuedAtMs = root["issuedAtMs"].as<uint32_t>();
     request.expiresAtMs = root["expiresAtMs"].as<uint32_t>();
     return true;

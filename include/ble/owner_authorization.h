@@ -33,6 +33,7 @@ struct Peer
 struct Request
 {
     uint64_t id = 0;
+    uint32_t generation = 0;
     uint32_t issuedAtMs = 0;
     uint32_t expiresAtMs = 0;
 };
@@ -240,6 +241,7 @@ private:
     bool validRequest(const Request &request, uint32_t nowMs) const
     {
         if (request.id == 0) return false;
+        if (request.generation != generation_) return false;
         const uint32_t lifetime = request.expiresAtMs - request.issuedAtMs;
         if (lifetime == 0 || lifetime > kMaxRequestLifetimeMs) return false;
         if (static_cast<int32_t>(nowMs - request.issuedAtMs) < 0) return false;

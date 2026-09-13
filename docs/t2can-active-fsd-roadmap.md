@@ -797,6 +797,35 @@ cannot write a frame directly, extend an expired lease implicitly, or convert a
 diagnostic session into OTA/TX authority. Public inbound port forwarding is not
 part of the plan.
 
+Implemented control-plane foundation:
+
+- `include/tx/tx_intent.h` defines the transport-neutral intent, policy context,
+  explicit block reasons, and bounded admission state without owning or calling
+  a CAN driver.
+- Intents carry source/feature IDs, monotonic per-source request ID, boot-session
+  nonce, issuance/expiry, semantic and physical buses, frame/DLC/mux constraints,
+  cadence/burst/cooldown, verified counter/checksum strategy, freshness/state
+  requirements, and required operation session.
+- Admission fails closed on reboot nonce mismatch, replay, expiry, maintenance or
+  OTA inhibit, wrong session, missing authorization/control channel, stale state,
+  unhealthy bus, invalid routing/frame shape, unknown integrity strategy,
+  unisolated Bench operation, rate limits, or capacity exhaustion.
+- `0x229` is an explicit semantic deny. A passing admission result still reports
+  `physicalAttempt=false`; a later scheduler/driver adapter must separately
+  record the actual attempt and result.
+- BLE owner mutations now include the current owner generation, preventing a
+  captured pre-reboot request from being accepted after permission or owner
+  generation changes.
+- No remote TX endpoint is enabled by this checkpoint. Existing raw BLE send and
+  state-changing BLE commands remain blocked; the web control plane remains
+  local/private.
+
+Focused native assertions cover allow/block ordering, nonce/replay/expiry,
+state/session/authorization gates, `0x229`, integrity requirements,
+Bench isolation, rate limits, reset, and fail-closed capacity. Migrating the
+existing built-in/plugin TX producers through this admission boundary remains
+the next structural step.
+
 ### P1.9 Anomaly and evidence bundle
 
 Add local-only detection for:
