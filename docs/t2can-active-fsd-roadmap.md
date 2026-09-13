@@ -580,6 +580,25 @@ Only after this milestone may a `0x247` TX module enter P2 Bench status. The
 available research set has no `0x247` TX result, and its source vehicle/profile
 must not be treated as proof for another model or software release.
 
+Implemented read-only research checkpoint:
+
+- `scripts/analyze_hands_on_correlation.py` parses a file or directory of
+  candump logs and reports co-presence, DLC, nearest-frame timing, and bit
+  co-variation for `0x247`/`0x3E9` without assigning unsupported semantics.
+- Output is derived-only: source SHA-256, counts, timing, and contingency tables;
+  it contains no raw payload, absolute source path, mutation path, or TX
+  capability (`tx_capability=false`).
+- The public `sqladm1n` research revision
+  `ccc62a1ecc8354520c070da6dfa7fea905211779` was replayed across all 78 logs:
+  1,316,711 frames parsed, zero parse errors, 4,569 `0x247` frames, 1,940
+  `0x3E9` frames, and both IDs present in 39 files. A 100 ms window produced 940
+  descriptive nearest-time pairs.
+- Two complete runs produced identical report digest
+  `6c948b18b319f0fcc4c36f0e6409129d2be014152407e9e9ee85e12bc031c4c4`.
+- Focused tests passed 4/4. The available evidence still does not establish a
+  `0x3E9` nag/satisfied/inactive semantic or any `0x247` TX behavior, so those
+  claims remain unknown instead of being coerced into a decoder.
+
 ### P1.3 `0x229` validator
 
 Add read-only handling for the observed DLC-3 frames:
