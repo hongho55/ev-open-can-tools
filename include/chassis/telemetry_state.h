@@ -67,6 +67,15 @@ struct TelemetrySnapshot
     bool dasSteeringSeen = false;
     bool mapSeen = false;
 
+    // Vehicle-bus SCCM_rightStalk (0x229), read-only. CRC is retained as an
+    // observation because its algorithm is not established by the DBC/captures.
+    bool rightStalkSeen = false;
+    uint8_t rightStalkCrc = 0;
+    uint8_t rightStalkCounter = 0;
+    uint8_t rightStalkStatus = 0;
+    uint8_t parkButtonStatus = 0;
+    uint32_t rightStalkMs = 0;
+
     // Party-CAN BMS values and presence-only diagnostics use independent clocks.
     bool bmsHvSeen = false;
     bool bmsSocSeen = false;
@@ -132,6 +141,8 @@ public:
         out.apControlSeen = fresh(snapshot_.apControlSeen, snapshot_.apControlMs, nowMs);
         out.dasSteeringSeen = fresh(snapshot_.dasSteeringSeen, snapshot_.dasSteeringMs, nowMs);
         out.mapSeen = fresh(snapshot_.mapSeen, snapshot_.mapMs, nowMs);
+        out.rightStalkSeen = fresh(snapshot_.rightStalkSeen,
+                                   snapshot_.rightStalkMs, nowMs);
         out.bmsHvSeen = fresh(snapshot_.bmsHvSeen, snapshot_.bmsHvMs, nowMs);
         out.bmsSocSeen = fresh(snapshot_.bmsSocSeen, snapshot_.bmsSocMs, nowMs);
         out.bmsThermalSeen = fresh(snapshot_.bmsThermalSeen, snapshot_.bmsThermalMs, nowMs);
@@ -208,6 +219,15 @@ private:
             snapshot_.brakeSeen = true;
             snapshot_.brakeApplied = isESPDriverBrakeApplied(frame);
             snapshot_.brakeMs = nowMs;
+            break;
+        case 0x229: // SCCM_rightStalk, vehicle bus, exact DLC-3 only
+            if (frame.dlc != 3) return false;
+            snapshot_.rightStalkSeen = true;
+            snapshot_.rightStalkCrc = frame.data[0];
+            snapshot_.rightStalkCounter = frame.data[1] & 0x0F;
+            snapshot_.rightStalkStatus = (frame.data[1] >> 4) & 0x07;
+            snapshot_.parkButtonStatus = frame.data[2] & 0x03;
+            snapshot_.rightStalkMs = nowMs;
             break;
         case 0x238: // UI_driverAssistMapData: presence only
             if (!hasDlc(frame, 2)) return false;

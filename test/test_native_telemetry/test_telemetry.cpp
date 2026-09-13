@@ -150,6 +150,27 @@ void test_decoder_fields_match_flipper_layouts()
     TEST_ASSERT_EQUAL_UINT8(5, snapshot.tractionControlMode);
 }
 
+void test_right_stalk_is_read_only_exact_dlc_and_stale_safe()
+{
+    Chassis::TelemetryState telemetry(DasLayout::StandardHw4, 100);
+    auto stalk = frame(0x229, 3, CAN_BUS_VEH);
+    stalk.data[0] = 0xAA; // observed CRC byte; validity is intentionally unknown
+    stalk.data[1] = 0x39; // counter 9, right-stalk status 3
+    stalk.data[2] = 0x01; // park button pressed
+
+    TEST_ASSERT_TRUE(telemetry.observe(stalk, 10));
+    auto snapshot = telemetry.snapshot(10);
+    TEST_ASSERT_TRUE(snapshot.rightStalkSeen);
+    TEST_ASSERT_EQUAL_HEX8(0xAA, snapshot.rightStalkCrc);
+    TEST_ASSERT_EQUAL_UINT8(9, snapshot.rightStalkCounter);
+    TEST_ASSERT_EQUAL_UINT8(3, snapshot.rightStalkStatus);
+    TEST_ASSERT_EQUAL_UINT8(1, snapshot.parkButtonStatus);
+
+    TEST_ASSERT_FALSE(telemetry.observe(frame(0x229, 2, CAN_BUS_VEH), 11));
+    TEST_ASSERT_FALSE(telemetry.observe(frame(0x229, 4, CAN_BUS_VEH), 11));
+    TEST_ASSERT_FALSE(telemetry.snapshot(110).rightStalkSeen);
+}
+
 void test_hw4_ap_state_uses_byte1_high_nibble()
 {
     Chassis::TelemetryState telemetry(DasLayout::StandardHw4, 100);
@@ -210,6 +231,7 @@ int main()
     RUN_TEST(test_das_layout_is_explicit_and_370_never_counts);
     RUN_TEST(test_unknown_or_short_dlc_is_rejected);
     RUN_TEST(test_decoder_fields_match_flipper_layouts);
+    RUN_TEST(test_right_stalk_is_read_only_exact_dlc_and_stale_safe);
     RUN_TEST(test_hw4_ap_state_uses_byte1_high_nibble);
     RUN_TEST(test_highland_layout_is_explicit_byte0_opt_in);
     RUN_TEST(test_samples_expire_wrap_safely_and_reset);

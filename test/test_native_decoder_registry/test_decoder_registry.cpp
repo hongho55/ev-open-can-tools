@@ -7,7 +7,7 @@ using namespace Chassis::DecoderRegistry;
 
 int main()
 {
-    static_assert(size() == 16, "registry count must be intentional");
+    static_assert(size() == 20, "registry count must be intentional");
 
     const Definition *speed = find(0x257, Bus::Chassis, "speedKph");
     assert(speed != nullptr);
@@ -22,6 +22,12 @@ int main()
     assert(current->use == Use::DisplayOnly);
 
     assert(find(0x132, Bus::Chassis, "packCurrentA") == nullptr);
+    const Definition *stalk = find(0x229, Bus::Vehicle, "rightStalkCounter");
+    assert(stalk != nullptr);
+    assert(stalk->minDlc == 3);
+    assert(stalk->confidence == Confidence::Confirmed);
+    assert(stalk->use == Use::DisplayOnly);
+    assert(find(0x229, Bus::Party, "rightStalkCounter") == nullptr);
     assert(find(0x247, Bus::Chassis, "candidate") == nullptr);
 
     for (const Definition &definition : kDefinitions)

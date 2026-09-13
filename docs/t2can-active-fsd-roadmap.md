@@ -611,6 +611,30 @@ Add read-only handling for the observed DLC-3 frames:
 
 Do not add a physical `0x229` write merely because parsing succeeds.
 
+Implemented read-only checkpoint:
+
+- `TelemetryState` accepts Vehicle-bus `0x229` only at exact DLC 3 and exposes
+  observed CRC byte, 4-bit counter, right-stalk state, and park-button state;
+  freshness expiry is applied like every other telemetry sample.
+- `decoder_registry.h` now distinguishes `Vehicle` from Chassis/Party and is
+  the single metadata source for the four `0x229` fields.
+- `scripts/validate_right_stalk.py` validates shape, modulo-16 counter steps,
+  state transitions, and `(bytes1..2) -> observed CRC` consistency without raw
+  payload disclosure or any TX capability.
+- Full 78-log replay parsed 1,316,711 frames with zero parser errors and found
+  2,328 `0x229` frames, all exact DLC 3. All counter values were observed;
+  stalk state 3 appeared once, park remained 0, reserved bits remained 0, and
+  17 observed bodies had no conflicting CRC byte.
+- The upstream `00 00 01` Park builder appeared zero times. The available
+  capture does not exercise Park, and the DBC identifies the CRC field but not
+  its algorithm; command validity therefore remains `unknown` and Park TX stays
+  absent.
+- Focused Python tests, the 10-case native telemetry suite, the standalone
+  decoder-registry assertion, and the `lilygo_t2can` build pass.
+
+Acceptance status: **complete for read-only validation; TX remains explicitly
+ineligible because checksum/counter command evidence is absent.**
+
 ### P1.4 Disabled `.cantest` and rule-draft workflow
 
 Support a reviewed test-profile format with this path:

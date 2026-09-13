@@ -9,7 +9,7 @@ namespace DecoderRegistry
 {
 inline constexpr const char *kSchemaVersion = "t2can-decoder-registry-v1";
 
-enum class Bus : uint8_t { Chassis, Party };
+enum class Bus : uint8_t { Chassis, Party, Vehicle };
 enum class Confidence : uint8_t { Observed, Inferred, Confirmed };
 enum class Use : uint8_t { DisplayOnly, PolicyGate, TxGeneration };
 
@@ -47,6 +47,10 @@ inline constexpr Definition kDefinitions[] = {
     {0x399, Bus::Chassis, 8, -1, "dasStatus", "layout-specific fields", 1.0f, 0.0f, false, 1500, "legacy/hw3", "repository signal mapping", "layout fixtures", Confidence::Confirmed, Use::DisplayOnly},
     {0x39B, Bus::Chassis, 8, -1, "dasStatus", "layout-specific fields", 1.0f, 0.0f, false, 1500, "standard/highland hw4", "repository signal mapping", "layout fixtures", Confidence::Confirmed, Use::DisplayOnly},
     {0x7FF, Bus::Chassis, 6, 2, "vehicleTier", "byte5 bits2..4", 1.0f, 0.0f, false, 1500, "legacy/hw3/hw4", "repository signal mapping", "mux fixtures", Confidence::Confirmed, Use::DisplayOnly},
+    {0x229, Bus::Vehicle, 3, -1, "rightStalkCrc", "byte0", 1.0f, 0.0f, false, 1500, "model3/y vehicle-can", "opendbc tesla_model3_vehicle.dbc", "2328 RX frames; algorithm unverified", Confidence::Observed, Use::DisplayOnly},
+    {0x229, Bus::Vehicle, 3, -1, "rightStalkCounter", "byte1 bits0..3", 1.0f, 0.0f, false, 1500, "model3/y vehicle-can", "opendbc tesla_model3_vehicle.dbc", "2328 RX frames across 38 files", Confidence::Confirmed, Use::DisplayOnly},
+    {0x229, Bus::Vehicle, 3, -1, "rightStalkStatus", "byte1 bits4..6", 1.0f, 0.0f, false, 1500, "model3/y vehicle-can", "opendbc tesla_model3_vehicle.dbc", "one non-idle observation", Confidence::Observed, Use::DisplayOnly},
+    {0x229, Bus::Vehicle, 3, -1, "parkButtonStatus", "byte2 bits0..1", 1.0f, 0.0f, false, 1500, "model3/y vehicle-can", "opendbc tesla_model3_vehicle.dbc", "unexercised in research set", Confidence::Inferred, Use::DisplayOnly},
     {0x132, Bus::Party, 4, -1, "packVoltageV", "little-endian bytes0..1", 0.01f, 0.0f, false, 1500, "party-can", "upstream mapping", "native fixtures", Confidence::Inferred, Use::DisplayOnly},
     {0x132, Bus::Party, 4, -1, "packCurrentA", "signed little-endian bytes2..3", 0.1f, 0.0f, true, 1500, "party-can", "upstream mapping", "native fixtures", Confidence::Inferred, Use::DisplayOnly},
     {0x292, Bus::Party, 3, -1, "socPercent", "byte1 bits2..7 + byte2", 0.1f, 0.0f, false, 1500, "party-can", "upstream mapping", "native fixtures", Confidence::Inferred, Use::DisplayOnly},
