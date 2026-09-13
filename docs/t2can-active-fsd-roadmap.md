@@ -852,7 +852,9 @@ Implemented anomaly evidence path:
   matcher.
 - DLC changes, RX stalls, echo mismatches, and capacity exhaustion expose a
   sticky `policyBlock`; anomalies never generate a TX rule or mutate layout or
-  bitrate.
+  bitrate. The sticky block is wired into the final driver `allowSendFrame`
+  callback, so all built-in and plugin sends are denied before a physical
+  attempt when anomaly policy is closed.
 - The live RX path feeds the tracker and `/status` exposes compact schema
   `t2can-can-anomaly-v1`, counters, last ID/physical bus, and policy-block state
   without payload bytes.

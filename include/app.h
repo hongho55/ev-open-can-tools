@@ -103,6 +103,7 @@ static void (*appDashboardTxObserver)(const CanFrame &, bool) = nullptr;
 static void (*appDashboardTxAttemptObserver)(const CanFrame &, bool, bool) = nullptr;
 static void (*appDashboardDecisionObserver)(bool, const char *) = nullptr;
 static bool (*appDashboardMasterTxEnabled)() = nullptr;
+static bool (*appDashboardAnomalyBlocksTx)() = nullptr;
 static Shared<bool> appMaintenanceTxInhibit{false};
 
 static bool appInjectionReady()
@@ -133,6 +134,13 @@ static bool appCanTransmitAllowed(const CanFrame &)
         if (appDashboardDecisionObserver) appDashboardDecisionObserver(false, "startup_or_can_stale");
         return false;
     }
+#if defined(ESP32_DASHBOARD) && !defined(NATIVE_BUILD)
+    if (appDashboardAnomalyBlocksTx && appDashboardAnomalyBlocksTx())
+    {
+        if (appDashboardDecisionObserver) appDashboardDecisionObserver(false, "can_anomaly");
+        return false;
+    }
+#endif
     if (!summonOnlyInjectionRuntime)
     {
         if (appDashboardDecisionObserver) appDashboardDecisionObserver(true, "allowed");

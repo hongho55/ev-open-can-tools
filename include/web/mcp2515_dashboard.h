@@ -281,6 +281,14 @@ static Chassis::TelemetryState dashTelemetry{Chassis::DasLayout::Unknown, 1500};
 static Chassis::LayoutRecommendation::Tracker dashLayoutTracker;
 static CanAnomaly::Tracker dashAnomalyTracker;
 static Chassis::EventRecorder dashRecorder;
+
+static bool dashAnomalyBlocksTx()
+{
+    DashDataGuard guard;
+    dashAnomalyTracker.tick(millis());
+    return dashAnomalyTracker.summary().policyBlock;
+}
+
 class DashRecorderConfigUpdate
 {
 public:
@@ -6660,6 +6668,7 @@ static void mcpDashboardSetup(CarManagerBase *handler, CanDriver *driver)
     appDashboardTxAttemptObserver = mcpDashOnTxAttemptFrame;
     appDashboardDecisionObserver = mcpDashOnInjectionDecision;
     appDashboardMasterTxEnabled = []() { return static_cast<bool>(canActive); };
+    appDashboardAnomalyBlocksTx = dashAnomalyBlocksTx;
     pluginSetDiagnosticsLogger([](const char *message)
                                { dashLog(String(message)); });
     dashResetWriteProbe();
