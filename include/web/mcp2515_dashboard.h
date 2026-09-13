@@ -3703,7 +3703,7 @@ static void handleSupport()
         dashCollectMergedFilterIds(configuredIds, sizeof(configuredIds) / sizeof(configuredIds[0]));
     struct SupportPluginSummary
     {
-        char name[32];
+        char name[PLUGIN_NAME_MAX];
         uint8_t priority;
         uint8_t ruleCount;
     };
@@ -4689,7 +4689,7 @@ static void handlePluginList()
 {
     struct PluginSummary
     {
-        char name[32];
+        char name[PLUGIN_NAME_MAX];
         char version[16];
         char author[32];
         uint8_t ruleCount;
@@ -4885,7 +4885,7 @@ static void handlePluginToggle()
     if (idx < pluginCount)
     {
         bool enabled = false;
-        char name[32] = {};
+        char name[PLUGIN_NAME_MAX] = {};
         {
             PluginLockGuard guard;
             pluginStore[idx].enabled = !pluginStore[idx].enabled;

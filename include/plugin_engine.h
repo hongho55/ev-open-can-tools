@@ -19,6 +19,7 @@ using String = std::string;
 #define PLUGIN_MAX 8
 #define PLUGIN_RULES_MAX 16
 #define PLUGIN_OPS_MAX 16
+#define PLUGIN_NAME_MAX 64
 #ifndef PLUGIN_FILTER_IDS_MAX
 #define PLUGIN_FILTER_IDS_MAX 32
 #endif
@@ -128,7 +129,7 @@ struct PluginRule
 
 struct PluginData
 {
-    char name[32];
+    char name[PLUGIN_NAME_MAX];
     char version[16];
     char author[32];
     char filename[32];
@@ -657,8 +658,10 @@ static bool pluginParseBus(JsonVariant value, uint8_t &mask)
 
 static bool pluginRuleMatchesBus(const PluginRule &rule, const CanFrame &frame)
 {
-    if (rule.busMask == CAN_BUS_ANY || frame.bus == CAN_BUS_ANY)
+    if (rule.busMask == CAN_BUS_ANY)
         return true;
+    if (frame.bus == CAN_BUS_ANY)
+        return false;
     return (rule.busMask & frame.bus) != 0;
 }
 

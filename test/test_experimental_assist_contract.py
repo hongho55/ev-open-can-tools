@@ -62,6 +62,9 @@ class ExperimentalAssistContract(unittest.TestCase):
     def test_hw4_summon_has_no_all_cars_catalog_bypass(self):
         self.assertNotIn("Summon EU Unlock for all cars", UI)
 
+    def test_fsd_catalog_rules_are_chassis_only(self):
+        self.assertEqual(UI.count("id:1021,bus:'CH'"), 4)
+
 
 if __name__ == "__main__":
     unittest.main()

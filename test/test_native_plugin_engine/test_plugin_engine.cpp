@@ -57,7 +57,7 @@ void test_mux_mask_matches_full_byte_mux()
     TEST_ASSERT_EQUAL_HEX8(0x10, driver.sent[0].data[1] & 0x10);
 }
 
-void test_bus_pin_matches_known_bus_and_allows_unknown_bus()
+void test_bus_pin_matches_known_bus_and_rejects_unknown_bus()
 {
     installPlugin(R"JSON({
       "name":"bus pin",
@@ -81,13 +81,13 @@ void test_bus_pin_matches_known_bus_and_allows_unknown_bus()
 
     CanFrame unknownFrame = {.id = 1021};
     unknownFrame.bus = CAN_BUS_ANY;
-    TEST_ASSERT_TRUE(pluginProcessFrame(unknownFrame, driver));
-    TEST_ASSERT_EQUAL_size_t(1, driver.sent.size());
+    TEST_ASSERT_FALSE(pluginProcessFrame(unknownFrame, driver));
+    TEST_ASSERT_EQUAL_size_t(0, driver.sent.size());
 
     CanFrame vehFrame = {.id = 1021};
     vehFrame.bus = CAN_BUS_VEH;
     TEST_ASSERT_TRUE(pluginProcessFrame(vehFrame, driver));
-    TEST_ASSERT_EQUAL_size_t(2, driver.sent.size());
+    TEST_ASSERT_EQUAL_size_t(1, driver.sent.size());
 }
 
 void test_filter_ids_keep_sixteen_rule_ids_when_gtw_silent_is_disabled_without_key()
@@ -268,6 +268,35 @@ void test_invalid_plugin_fields_fail_closed()
         plugin));
 }
 
+void test_long_fsd_catalog_name_and_chassis_bus_parse()
+{
+    PluginData plugin = {};
+    TEST_ASSERT_TRUE(pluginParseJson(
+        R"JSON({"name":"Emergency Vehicle Detection HW4 with FSD enabling","enabled":false,"rules":[{"id":1021,"bus":"CH","mux":0,"ops":[{"type":"set_bit","bit":46,"val":1},{"type":"set_bit","bit":60,"val":1}]}]})JSON",
+        plugin));
+    TEST_ASSERT_EQUAL_STRING("Emergency Vehicle Detection HW4 with FSD enabling", plugin.name);
+    TEST_ASSERT_EQUAL_UINT8(1, plugin.ruleCount);
+    TEST_ASSERT_EQUAL_UINT8(CAN_BUS_CH, plugin.rules[0].busMask);
+
+    TEST_ASSERT_TRUE(pluginInsert(pluginCount, plugin));
+    MockDriver driver;
+
+    CanFrame partyFrame = {.id = 1021};
+    partyFrame.bus = CAN_BUS_PARTY | CAN_BUS_CAN_A;
+    partyFrame.physicalBus = CAN_BUS_CAN_A;
+    TEST_ASSERT_FALSE(pluginProcessFrame(partyFrame, driver));
+
+    CanFrame unknownFrame = {.id = 1021};
+    TEST_ASSERT_FALSE(pluginProcessFrame(unknownFrame, driver));
+
+    CanFrame chassisFrame = {.id = 1021};
+    chassisFrame.bus = CAN_BUS_CH | CAN_BUS_CAN_B;
+    chassisFrame.physicalBus = CAN_BUS_CAN_B;
+    TEST_ASSERT_TRUE(pluginProcessFrame(chassisFrame, driver));
+    TEST_ASSERT_EQUAL_size_t(1, driver.sent.size());
+    TEST_ASSERT_EQUAL_UINT8(CAN_BUS_CAN_B, driver.sent[0].physicalBus);
+}
+
 void test_operation_outside_frame_dlc_is_not_sent()
 {
     installPlugin(R"JSON({
@@ -286,13 +315,14 @@ int main()
 {
     UNITY_BEGIN();
     RUN_TEST(test_mux_mask_matches_full_byte_mux);
-    RUN_TEST(test_bus_pin_matches_known_bus_and_allows_unknown_bus);
+    RUN_TEST(test_bus_pin_matches_known_bus_and_rejects_unknown_bus);
     RUN_TEST(test_filter_ids_keep_sixteen_rule_ids_when_gtw_silent_is_disabled_without_key);
     RUN_TEST(test_gtw_silent_is_disabled_without_custom_key);
     RUN_TEST(test_byte_match_gates_0x370_counter_duplicate_plugin);
     RUN_TEST(test_or_and_byte_ops_apply_expected_values);
     RUN_TEST(test_hw3_fsd_activation_rule_reports_diagnostics);
     RUN_TEST(test_invalid_plugin_fields_fail_closed);
+    RUN_TEST(test_long_fsd_catalog_name_and_chassis_bus_parse);
     RUN_TEST(test_operation_outside_frame_dlc_is_not_sent);
     return UNITY_END();
 }

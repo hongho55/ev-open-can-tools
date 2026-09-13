@@ -100,10 +100,10 @@ const $=id=>document.getElementById(id);let config=null,plugins=[],selectedPlugi
 const catalogPlugin=(label,glyph,name,description,rules,risk=false)=>({label,glyph,risk,json:{name,version:'1.0.0',author:'ev-open-can-tools',description,rules}});
 const pluginCatalog=[
 catalogPlugin('제한속도 경고음 해제','♩','ISA Chime Suppress HW4','Turn off speed limit chime',[{id:921,ops:[{type:'or_byte',byte:1,val:32,description:'Sets the ISA chime suppress bit in byte 1.'},{type:'checksum'}]}]),
-catalogPlugin('FSD 활성화','◇','FSD Activation HW4 (without TLSSC bypass)','Will enable FSD, NOT SAFE, YOU WILL GET BANNED',[{id:1021,mux:0,ops:[{type:'set_bit',bit:46,val:1},{type:'set_bit',bit:60,val:1}]}],true),
-catalogPlugin('TLSSC 우회 + FSD','⇥','Bypass TLSSC HW4 and include FSD activation','Will bypass TLSSC and enable FSD, NOT SAFE, YOU WILL GET BANNED',[{id:1021,mux:0,ops:[{type:'set_bit',bit:38,val:1},{type:'set_bit',bit:46,val:1},{type:'set_bit',bit:60,val:1}]}],true),
-catalogPlugin('긴급차량 감지 + FSD','◉','Emergency Vehicle Detection HW4 with FSD enabling','Will enable FSD and emergency vehicle detection, NOT SAFE, YOU WILL GET BANNED',[{id:1021,mux:0,ops:[{type:'set_bit',bit:46,val:1},{type:'set_bit',bit:59,val:1},{type:'set_bit',bit:60,val:1}]}],true),
-...[[5,7],[7,10],[10,14],[15,21]].map(([offset,val])=>catalogPlugin(`속도 오프셋 +${offset}`,'＋',`HW4 Speed Offset +${offset}`,'NOT SAFE, YOU WILL GET BANNED',[{id:1021,mux:2,ops:[{type:'set_byte',byte:1,val,mask:63}]}],true))];
+catalogPlugin('FSD 활성화','◇','FSD Activation HW4 (without TLSSC bypass)','Will enable FSD, NOT SAFE, YOU WILL GET BANNED',[{id:1021,bus:'CH',mux:0,ops:[{type:'set_bit',bit:46,val:1},{type:'set_bit',bit:60,val:1}]}],true),
+catalogPlugin('TLSSC 우회 + FSD','⇥','Bypass TLSSC HW4 and include FSD activation','Will bypass TLSSC and enable FSD, NOT SAFE, YOU WILL GET BANNED',[{id:1021,bus:'CH',mux:0,ops:[{type:'set_bit',bit:38,val:1},{type:'set_bit',bit:46,val:1},{type:'set_bit',bit:60,val:1}]}],true),
+catalogPlugin('긴급차량 감지 + FSD','◉','Emergency Vehicle Detection HW4 with FSD enabling','Will enable FSD and emergency vehicle detection, NOT SAFE, YOU WILL GET BANNED',[{id:1021,bus:'CH',mux:0,ops:[{type:'set_bit',bit:46,val:1},{type:'set_bit',bit:59,val:1},{type:'set_bit',bit:60,val:1}]}],true),
+...[[5,7],[7,10],[10,14],[15,21]].map(([offset,val])=>catalogPlugin(`속도 오프셋 +${offset}`,'＋',`HW4 Speed Offset +${offset}`,'NOT SAFE, YOU WILL GET BANNED',[{id:1021,bus:'CH',mux:2,ops:[{type:'set_byte',byte:1,val,mask:63}]}],true))];
 pluginCatalog[1].json.version='1.0.1';pluginCatalog[3].json.version='2.0.0';
 function show(message,bad=false){const t=$('toast');t.textContent=message;t.style.color=bad?'var(--red)':'';t.classList.add('show');clearTimeout(show.timer);show.timer=setTimeout(()=>t.classList.remove('show'),2500)}
 function setStatus(id,message,bad=false){const e=$(id);if(e){e.textContent=message;e.style.color=bad?'var(--red)':''}}
