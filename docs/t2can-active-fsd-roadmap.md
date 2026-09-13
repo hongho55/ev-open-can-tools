@@ -691,6 +691,22 @@ It must not change the Active TX bitrate automatically. The user confirms the
 rate, after which the Active session locks it. Loss of confidence blocks TX
 rather than silently switching rates.
 
+Implemented host-side recommendation core:
+
+- `include/can_bitrate_recommendation.h` scores fixed candidates at 125/250/500/
+  1000 kbps from valid frames, implausible frames, controller errors, timestamp
+  regressions, and bounded-window stability.
+- Evidence not collected in hardware listen-only mode is invalid regardless of
+  frame count. Results retain ranked alternatives and Low/Medium/High confidence.
+- Medium/High confidence permits only a later confirmation step. The result
+  always declares `requiresExplicitConfirmation=true` and
+  `mayApplyAutomatically=false`; no driver reconfiguration API was added.
+- Host assertions and the `lilygo_t2can` build pass.
+
+Acceptance status: **recommendation/scoring core complete; physical CAN A/B
+listen-only collection and recommendation read-back require the later focused
+vehicle session. No bitrate has been changed.**
+
 ### P1.6 Layout recommendation, not automatic layout mutation
 
 Observed frames may produce a ranked layout suggestion. The UI must show the
