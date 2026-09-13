@@ -40,6 +40,7 @@
 #include "chassis/telemetry_state.h"
 #include "chassis/event_recorder.h"
 #include "diagnostics/can_anomaly_tracker.h"
+#include "experimental/assist_controls.h"
 #include "tx/tx_scheduler.h"
 #if defined(DRIVER_ESP32_EXT_MCP2515)
 #include "drivers/esp32_mcp2515_driver.h"
@@ -283,6 +284,7 @@ static Chassis::LayoutRecommendation::Tracker dashLayoutTracker;
 static CanAnomaly::Tracker dashAnomalyTracker;
 static Chassis::EventRecorder dashRecorder;
 static TxControl::Scheduler dashTxScheduler;
+static TxControl::Scheduler dashCanBTxScheduler;
 static uint32_t dashTxSessionNonce = 0;
 
 static bool dashAnomalyBlocksTx()
@@ -357,6 +359,13 @@ static Shared<uint32_t> dashBlePasskey{0};
 static Shared<bool> apInjectionGate{kDashApGateDefaultEnabled};
 static Shared<bool> summonOnlyInjection{false};
 static Shared<uint8_t> dashNagMode{static_cast<uint8_t>(NagMode::Disabled)};
+static Shared<bool> dashUlcStalkConfirm{false};
+static Shared<bool> dashUlcOffHighway{false};
+static Shared<uint8_t> dashUlcSpeedConfig{ExperimentalAssist::kPreserveSetting};
+static Shared<uint8_t> dashUlcBlindSpotConfig{ExperimentalAssist::kPreserveSetting};
+static Shared<bool> dashSummonEuUnlock{false};
+static Shared<bool> dashHandsOn247DryRunEnabled{false};
+static ExperimentalAssist::HandsOn247DryRun dashHandsOn247DryRun;
 static Shared<bool> dashSpeedProfileAuto{true};
 static Shared<uint8_t> dashManualSpeedProfile{1};
 static NagHandler dashNagHandler;
@@ -807,6 +816,33 @@ static bool dashSummonOnlyInjectionAllowed()
     return dashSummonOnlyInjectionDecision().allowed;
 }
 
+// Final physical-TX implementation of the dashboard AP-gate toggle. OFF keeps
+// the pre-2026.14 continuous RX-echo behaviour. ON requires fresh CAN state to
+// prove Park+stationary, stable AP, or an active Summon session. Keeping this at
+// the driver boundary prevents direct handler/plugin sends from bypassing it.
+static bool dashActivityTxAllowed()
+{
+    if (dashDevMode)
+        return true; // simulated loopback only; no physical CAN attempt
+    if (!apInjectionGate)
+        return true;
+    if (!dashHandler)
+        return false;
+
+    const uint32_t now = millis();
+    Chassis::TelemetrySnapshot telemetry;
+    {
+        DashDataGuard guard;
+        telemetry = dashTelemetry.snapshot(now);
+    }
+    const bool apActive = telemetry.dasSeen && isDASAutopilotActive(telemetry.apState);
+    const unsigned long apStableMs = dashTrackApStableMs(apActive, now);
+    const bool stableAp = apActive && apStableMs >= kDashApInjectionStableDelayMs;
+    const SummonInjectionDecision stateDecision = evaluateSummonInjectionPolicy(
+        dashHandler->summonOnlyInjectionSnapshot(), now);
+    return stableAp || stateDecision.allowed;
+}
+
 static void dashRefreshSummonOnlyPolicy()
 {
     static bool initialized = false;
@@ -865,7 +901,7 @@ static bool dashInjectionActive()
     return true;
 }
 
-static TxControl::PolicyContext dashTxPolicyContext(void *)
+static TxControl::PolicyContext dashTxPolicyContextForBus(uint8_t physicalBus)
 {
     TxControl::PolicyContext context;
     context.nowMs = millis();
@@ -878,11 +914,42 @@ static TxControl::PolicyContext dashTxPolicyContext(void *)
     context.otaInhibit = static_cast<bool>(appMaintenanceTxInhibit);
     context.controlAuthorized = true; // Built-in feature, not a remote principal.
     context.controlConnected = true;
+    context.parked = dashHandler && static_cast<bool>(dashHandler->Parked);
+    Chassis::TelemetrySnapshot telemetry;
+    {
+        DashDataGuard guard;
+        telemetry = dashTelemetry.snapshot(context.nowMs);
+    }
+    context.stationary = telemetry.speedSeen && telemetry.speedKph >= -0.1f &&
+                         telemetry.speedKph <= 0.1f;
+    bool summonEligible = false;
+    if (dashHandler)
+    {
+        const SummonInjectionDecision summonDecision = evaluateSummonInjectionPolicy(
+            dashHandler->summonOnlyInjectionSnapshot(), context.nowMs);
+        summonEligible = summonDecision.allowed;
+    }
+    const bool freshApActive = telemetry.dasSeen && isDASAutopilotActive(telemetry.apState);
+    // AP gate OFF is the explicit legacy/pre-2026.14 continuous mode. When ON,
+    // individual assist intents inherit the same validated activity conditions.
+    context.summonEligible = !static_cast<bool>(apInjectionGate) || summonEligible;
+    context.assistActivity = !static_cast<bool>(apInjectionGate) ||
+                             freshApActive || summonEligible;
     bool ready = false;
     uint32_t errors = 0;
     context.busHealthy = dashDriver &&
-                         dashDriver->physicalHealth(CAN_BUS_CAN_A, ready, errors) && ready;
+                         dashDriver->physicalHealth(physicalBus, ready, errors) && ready;
     return context;
+}
+
+static TxControl::PolicyContext dashTxPolicyContext(void *)
+{
+    return dashTxPolicyContextForBus(CAN_BUS_CAN_A);
+}
+
+static TxControl::PolicyContext dashCanBTxPolicyContext(void *)
+{
+    return dashTxPolicyContextForBus(CAN_BUS_CAN_B);
 }
 
 static bool dashSubmitNagTx(const CanFrame &frame, CanDriver &driver, uint32_t)
@@ -903,6 +970,68 @@ static bool dashSubmitNagTx(const CanFrame &frame, CanDriver &driver, uint32_t)
     if (!result.policy.allowed && appDashboardDecisionObserver)
         appDashboardDecisionObserver(false, TxControl::reasonName(result.policy.reason));
     return result.driverSucceeded;
+}
+
+static ExperimentalAssist::Config dashExperimentalAssistConfig()
+{
+    ExperimentalAssist::Config config;
+    config.ulcStalkConfirm = static_cast<bool>(dashUlcStalkConfirm);
+    config.ulcOffHighway = static_cast<bool>(dashUlcOffHighway);
+    config.ulcSpeedConfig = static_cast<uint8_t>(dashUlcSpeedConfig);
+    config.ulcBlindSpotConfig = static_cast<uint8_t>(dashUlcBlindSpotConfig);
+    config.summonEuUnlock = static_cast<bool>(dashSummonEuUnlock);
+    return config;
+}
+
+static bool dashSubmitAssistTx(const CanFrame &frame, CanDriver &driver,
+                               uint16_t requirements)
+{
+    if (&driver != dashDriver)
+        return false;
+    TxControl::TxIntent intent = dashCanBTxScheduler.prepare(
+        TxControl::Source::BuiltIn, static_cast<uint16_t>(frame.id), frame,
+        CAN_BUS_CH, CAN_BUS_CAN_B, TxControl::Session::Active, 100);
+    intent.cadenceMs = 20;
+    intent.maxBurst = 50;
+    intent.cooldownMs = 1000;
+    intent.counter = TxControl::CounterStrategy::PreserveObserved;
+    intent.checksum = TxControl::ChecksumStrategy::PreserveObserved;
+    intent.requirements = requirements;
+    const TxControl::Submission result = dashCanBTxScheduler.submit(intent);
+    if (!result.policy.allowed && appDashboardDecisionObserver)
+        appDashboardDecisionObserver(false, TxControl::reasonName(result.policy.reason));
+    return result.driverSucceeded;
+}
+
+static void mcpDashOnExperimentalFrame(const CanFrame &observed, CanDriver &driver)
+{
+    if (observed.id == ExperimentalAssist::kHandsOnCandidateId ||
+        observed.id == ExperimentalAssist::kHandsOnContextId)
+    {
+        DashDataGuard guard;
+        dashHandsOn247DryRun.observe(observed, millis());
+    }
+
+    const ExperimentalAssist::Config config = dashExperimentalAssistConfig();
+    CanFrame modified;
+    if ((hwMode == 1 || hwMode == 2) &&
+        ExperimentalAssist::prepareUlcEcho(config, observed, modified))
+    {
+        dashSubmitAssistTx(modified, driver,
+                           static_cast<uint16_t>(TxControl::RequireStartupFresh |
+                                                 TxControl::RequireVehicleFresh |
+                                                 TxControl::RequireAssistActivity));
+        return;
+    }
+
+    if (hwMode == 2 &&
+        ExperimentalAssist::prepareSummonEuHw4Echo(config, observed, modified))
+    {
+        dashSubmitAssistTx(modified, driver,
+                           static_cast<uint16_t>(TxControl::RequireStartupFresh |
+                                                 TxControl::RequireVehicleFresh |
+                                                 TxControl::RequireSummonEligible));
+    }
 }
 
 static bool dashCheckNagDisabled()
@@ -1059,6 +1188,7 @@ static void dashInvalidateTxSession()
     }
     dashTxSessionNonce = next;
     dashTxScheduler.cancelAll();
+    dashCanBTxScheduler.cancelAll();
 }
 
 static void dashApplyRuntimeState(bool refreshLed)
@@ -1081,6 +1211,9 @@ static void dashApplyRuntimeState(bool refreshLed)
     if (dashHandler)
         dashHandler->setDasLayout(dasLayout);
     summonOnlyInjectionRuntime = static_cast<bool>(summonOnlyInjection);
+    if (hwMode != 2)
+        dashSummonEuUnlock = false;
+    dashHandsOn247DryRun.setEnabled(static_cast<bool>(dashHandsOn247DryRunEnabled));
 
     if (dashHandler)
     {
@@ -1115,6 +1248,12 @@ static bool dashSavePrefs()
     prefs.putBool("ap_gate", apInjectionGate);
     prefs.putBool("sum_only", summonOnlyInjection);
     prefs.putUChar("nag_mode", dashNagMode);
+    prefs.putBool("ulc_stalk", dashUlcStalkConfirm);
+    prefs.putBool("ulc_offhwy", dashUlcOffHighway);
+    prefs.putUChar("ulc_speed", dashUlcSpeedConfig);
+    prefs.putUChar("ulc_blind", dashUlcBlindSpotConfig);
+    prefs.putBool("sum_eu", dashSummonEuUnlock);
+    prefs.putBool("h247_dry", dashHandsOn247DryRunEnabled);
     prefs.putBool("sp_auto", dashSpeedProfileAuto);
     prefs.putUChar("sp_sel", dashManualSpeedProfile);
     prefs.putUChar("plg_rep", pluginGetReplayCount());
@@ -1473,6 +1612,18 @@ static void dashLoadPrefs()
     apInjectionGate = prefs.getBool("ap_gate", kDashApGateDefaultEnabled);
     summonOnlyInjection = prefs.getBool("sum_only", false);
     dashNagMode = clampNagMode(prefs.getUChar("nag_mode", static_cast<uint8_t>(NagMode::Disabled)));
+    dashUlcStalkConfirm = prefs.getBool("ulc_stalk", false);
+    dashUlcOffHighway = prefs.getBool("ulc_offhwy", false);
+    {
+        const uint8_t stored = prefs.getUChar("ulc_speed", ExperimentalAssist::kPreserveSetting);
+        dashUlcSpeedConfig = stored <= 3 ? stored : ExperimentalAssist::kPreserveSetting;
+    }
+    {
+        const uint8_t stored = prefs.getUChar("ulc_blind", ExperimentalAssist::kPreserveSetting);
+        dashUlcBlindSpotConfig = stored <= 2 ? stored : ExperimentalAssist::kPreserveSetting;
+    }
+    dashSummonEuUnlock = prefs.getBool("sum_eu", false);
+    dashHandsOn247DryRunEnabled = prefs.getBool("h247_dry", false);
     dashSpeedProfileAuto = prefs.getBool("sp_auto", true);
     dashManualSpeedProfile = dashClampSpeedProfileForHw(hwMode, prefs.getUChar("sp_sel", 1));
     pluginSetReplayCount(prefs.getUChar("plg_rep", PLUGIN_REPLAY_COUNT));
@@ -2634,6 +2785,7 @@ static void handleRoot()
 static void handleDiagnosticDetails()
 {
     Chassis::TelemetrySnapshot t;
+    ExperimentalAssist::DryRunSnapshot dryRun;
     bool enabled = false, frozen = false, usingPsram = false, persisted = false;
     size_t count = 0, rawCount = 0, stateCount = 0, rawCapacity = 0, stateCapacity = 0;
     uint32_t triggerMs = 0, coverageMs = 0, stateCoverageMs = 0, drops = 0;
@@ -2669,6 +2821,7 @@ static void handleDiagnosticDetails()
         incidentStorageFree = dashIncidentStorageFreeBytes;
         incidentStoragePressure = dashIncidentStoragePressure;
         incidentEvictions = dashIncidentEvictions;
+        dryRun = dashHandsOn247DryRun.snapshot();
         strlcpy(incidentLastError, dashIncidentLastError, sizeof(incidentLastError));
         strncpy(reason, dashRecorder.reason(), sizeof(reason) - 1);
 #ifdef ESP_PLATFORM
@@ -2677,7 +2830,7 @@ static void handleDiagnosticDetails()
         psramProbeBytes = static_cast<unsigned long>(RuntimeDiagnostics::psramProbeBytes.load(std::memory_order_relaxed));
 #endif
     }
-    char response[2300];
+    char response[2450];
     BoundedTextWriter json(response, sizeof(response));
     json.appendf("{\"bms\":{\"hvSeen\":%s,\"voltage\":%.2f,\"current\":%.1f,"
         "\"socSeen\":%s,\"soc\":%.1f,\"thermalSeen\":%s,\"minC\":%d,\"maxC\":%d},"
@@ -2691,6 +2844,7 @@ static void handleDiagnosticDetails()
         "\"generation\":%lu,\"persisted\":%s,\"reason\":\"%s\",\"triggerMs\":%lu},"
         "\"incidentStore\":{\"pending\":%u,\"acknowledged\":%u,\"totalBytes\":%lu,\"freeBytes\":%lu,"
         "\"pressure\":%s,\"evictions\":%lu,\"lastError\":\"%s\"},"
+        "\"handsOn247DryRun\":{\"enabled\":%s,\"frames247\":%lu,\"frames3e9\":%lu,\"nearbyEvents\":%lu},"
         "\"psram\":{\"verified\":%s,\"totalBytes\":%lu,\"probeBytes\":%lu}}",
         t.bmsHvSeen ? "true" : "false", t.packVoltageV, t.packCurrentA,
         t.bmsSocSeen ? "true" : "false", t.socPercent,
@@ -2713,6 +2867,8 @@ static void handleDiagnosticDetails()
         static_cast<unsigned>(pendingIncidents), static_cast<unsigned>(acknowledgedIncidents),
         static_cast<unsigned long>(incidentStorageTotal), static_cast<unsigned long>(incidentStorageFree),
         incidentStoragePressure ? "true" : "false", static_cast<unsigned long>(incidentEvictions), incidentLastError,
+        dryRun.enabled ? "true" : "false", static_cast<unsigned long>(dryRun.frames247),
+        static_cast<unsigned long>(dryRun.frames3e9), static_cast<unsigned long>(dryRun.nearbyEvents),
 #ifdef ESP_PLATFORM
         psramVerified ? "true" : "false", psramBytes, psramProbeBytes
 #else
@@ -3862,6 +4018,11 @@ struct ConfigResult
 static String ctrlBuildConfigJson()
 {
     CarManagerBase *handler = dashHandler;
+    ExperimentalAssist::DryRunSnapshot dryRun;
+    {
+        DashDataGuard guard;
+        dryRun = dashHandsOn247DryRun.snapshot();
+    }
     String json = "{\"hw\":" + String(hwMode);
     json += ",\"dasLayout\":" + String(dashDasLayoutOverride);
     json += ",\"dasLayoutName\":\"" + String(dashDasLayoutName(dashDasLayoutOverride)) + "\"";
@@ -3873,6 +4034,15 @@ static String ctrlBuildConfigJson()
     json += ",\"apGate\":" + String(apInjectionGate ? "true" : "false");
     json += ",\"summonOnly\":" + String(summonOnlyInjection ? "true" : "false");
     json += ",\"nagMode\":" + String(dashNagMode);
+    json += ",\"ulcStalkConfirm\":" + String(dashUlcStalkConfirm ? "true" : "false");
+    json += ",\"ulcOffHighway\":" + String(dashUlcOffHighway ? "true" : "false");
+    json += ",\"ulcSpeedConfig\":" + String(dashUlcSpeedConfig <= 3 ? static_cast<int>(dashUlcSpeedConfig) : -1);
+    json += ",\"ulcBlindSpotConfig\":" + String(dashUlcBlindSpotConfig <= 2 ? static_cast<int>(dashUlcBlindSpotConfig) : -1);
+    json += ",\"summonEuUnlock\":" + String(dashSummonEuUnlock ? "true" : "false");
+    json += ",\"handsOn247DryRun\":" + String(dryRun.enabled ? "true" : "false");
+    json += ",\"handsOn247Stats\":{\"frames247\":" + String(dryRun.frames247);
+    json += ",\"frames3e9\":" + String(dryRun.frames3e9);
+    json += ",\"nearbyEvents\":" + String(dryRun.nearbyEvents) + "}";
     json += ",\"hw3OffsetSlew\":" + String(hw3OffsetSlew ? "true" : "false");
     json += ",\"hw3SlewRate\":" + String(hw3SlewRate);
     json += ",\"ledBrightness\":" + String(dashLedBrightness);
@@ -3893,11 +4063,17 @@ static ConfigResult ctrlApplyConfig(const ConfigArgs &args)
     long replayValue = pluginGetReplayCount();
     long nagModeValue = dashNagMode;
     long slewRateValue = hw3SlewRate;
+    long ulcSpeedValue = dashUlcSpeedConfig <= 3 ? static_cast<long>(dashUlcSpeedConfig) : -1;
+    long ulcBlindValue = dashUlcBlindSpotConfig <= 2 ? static_cast<long>(dashUlcBlindSpotConfig) : -1;
     bool canValue = canActive;
     bool speedAutoValue = dashSpeedProfileAuto;
     bool gateValue = apInjectionGate;
     bool summonOnlyValue = summonOnlyInjection;
     bool slewValue = hw3OffsetSlew;
+    bool ulcStalkValue = dashUlcStalkConfirm;
+    bool ulcOffHighwayValue = dashUlcOffHighway;
+    bool summonEuValue = dashSummonEuUnlock;
+    bool hands247Value = dashHandsOn247DryRunEnabled;
     const char *slewArg = args.has("hw3OffsetSlew") ? "hw3OffsetSlew" : "offsetSlew";
     const char *slewRateArg = args.has("hw3SlewRate") ? "hw3SlewRate" : "offsetSlewRate";
     bool valid = true;
@@ -3916,6 +4092,12 @@ static ConfigResult ctrlApplyConfig(const ConfigArgs &args)
         valid &= dashParseLong(args.get("nag"), nagModeValue) &&
                  nagModeValue >= static_cast<long>(NagMode::Disabled) &&
                  nagModeValue <= static_cast<long>(NagMode::ModeC);
+    if (args.has("ulcSpeed"))
+        valid &= dashParseLong(args.get("ulcSpeed"), ulcSpeedValue) &&
+                 ulcSpeedValue >= -1 && ulcSpeedValue <= 3;
+    if (args.has("ulcBlind"))
+        valid &= dashParseLong(args.get("ulcBlind"), ulcBlindValue) &&
+                 ulcBlindValue >= -1 && ulcBlindValue <= 2;
     if (args.has("hw3SlewRate") || args.has("offsetSlewRate"))
         valid &= dashParseLong(args.get(slewRateArg), slewRateValue) &&
                  slewRateValue >= kHw3SlewRateMin && slewRateValue <= kHw3SlewRateMax;
@@ -3927,6 +4109,14 @@ static ConfigResult ctrlApplyConfig(const ConfigArgs &args)
         valid &= dashParseBool(args.get("apg"), gateValue);
     if (args.has("smo"))
         valid &= dashParseBool(args.get("smo"), summonOnlyValue);
+    if (args.has("ulcStalk"))
+        valid &= dashParseBool(args.get("ulcStalk"), ulcStalkValue);
+    if (args.has("ulcOffHighway"))
+        valid &= dashParseBool(args.get("ulcOffHighway"), ulcOffHighwayValue);
+    if (args.has("summonEu"))
+        valid &= dashParseBool(args.get("summonEu"), summonEuValue);
+    if (args.has("hands247"))
+        valid &= dashParseBool(args.get("hands247"), hands247Value);
     if (args.has("hw3OffsetSlew") || args.has("offsetSlew"))
         valid &= dashParseBool(args.get(slewArg), slewValue);
     if (!valid)
@@ -3940,6 +4130,11 @@ static ConfigResult ctrlApplyConfig(const ConfigArgs &args)
         return {400,
                 String("{\"ok\":false,\"error\":\"Nag Mode C is blocked on HW4 after reported control faults\"}")};
     }
+    if (args.has("summonEu") && summonEuValue && hwValue != 2)
+    {
+        return {400,
+                String("{\"ok\":false,\"error\":\"Summon EU flag is experimental and HW4-only\"}")};
+    }
 
     AppHandlerGuard appGuard;
     uint8_t oldHw = hwMode;
@@ -3950,6 +4145,12 @@ static ConfigResult ctrlApplyConfig(const ConfigArgs &args)
     bool oldGate = apInjectionGate;
     bool oldSummonOnly = summonOnlyInjection;
     uint8_t oldNagMode = dashNagMode;
+    bool oldUlcStalk = dashUlcStalkConfirm;
+    bool oldUlcOffHighway = dashUlcOffHighway;
+    uint8_t oldUlcSpeed = dashUlcSpeedConfig;
+    uint8_t oldUlcBlind = dashUlcBlindSpotConfig;
+    bool oldSummonEu = dashSummonEuUnlock;
+    bool oldHands247 = dashHandsOn247DryRunEnabled;
     uint8_t oldReplay = pluginGetReplayCount();
     bool oldSlew = hw3OffsetSlew;
     uint8_t oldSlewRate = hw3SlewRate;
@@ -3971,6 +4172,7 @@ static ConfigResult ctrlApplyConfig(const ConfigArgs &args)
     bool loggedSlew = false;
     uint8_t loggedSlewRate = 0;
     bool nagChanged = false;
+    bool experimentalChanged = false;
     {
         PluginLockGuard pluginGuard;
         DashDataGuard dataGuard;
@@ -4043,6 +4245,30 @@ static ConfigResult ctrlApplyConfig(const ConfigArgs &args)
                 nagChanged = true;
             }
         }
+        if (args.has("ulcStalk"))
+            dashUlcStalkConfirm = ulcStalkValue;
+        if (args.has("ulcOffHighway"))
+            dashUlcOffHighway = ulcOffHighwayValue;
+        if (args.has("ulcSpeed"))
+            dashUlcSpeedConfig = ulcSpeedValue < 0
+                                     ? ExperimentalAssist::kPreserveSetting
+                                     : static_cast<uint8_t>(ulcSpeedValue);
+        if (args.has("ulcBlind"))
+            dashUlcBlindSpotConfig = ulcBlindValue < 0
+                                         ? ExperimentalAssist::kPreserveSetting
+                                         : static_cast<uint8_t>(ulcBlindValue);
+        if (args.has("summonEu"))
+            dashSummonEuUnlock = summonEuValue;
+        if (args.has("hands247"))
+            dashHandsOn247DryRunEnabled = hands247Value;
+        if (hwMode != 2)
+            dashSummonEuUnlock = false;
+        experimentalChanged = oldUlcStalk != static_cast<bool>(dashUlcStalkConfirm) ||
+                              oldUlcOffHighway != static_cast<bool>(dashUlcOffHighway) ||
+                              oldUlcSpeed != static_cast<uint8_t>(dashUlcSpeedConfig) ||
+                              oldUlcBlind != static_cast<uint8_t>(dashUlcBlindSpotConfig) ||
+                              oldSummonEu != static_cast<bool>(dashSummonEuUnlock) ||
+                              oldHands247 != static_cast<bool>(dashHandsOn247DryRunEnabled);
         if (args.has("plgr"))
         {
             uint8_t previous = pluginGetReplayCountLocked();
@@ -4100,6 +4326,8 @@ static ConfigResult ctrlApplyConfig(const ConfigArgs &args)
         dashLog("[CFG] Offset slew " + String(loggedSlew ? "ON" : "OFF"));
     if (slewRateLogged)
         dashLog("[CFG] Offset slew rate " + String(loggedSlewRate) + "%/s");
+    if (experimentalChanged)
+        dashLog("[CFG] Experimental assist controls updated; TX session rotated");
 
     if (nagChanged)
         dashReapplyFiltersWithPlugins();
@@ -4128,6 +4356,12 @@ static ConfigResult ctrlApplyConfig(const ConfigArgs &args)
             apInjectionGate = oldGate;
             summonOnlyInjection = oldSummonOnly;
             dashNagMode = oldNagMode;
+            dashUlcStalkConfirm = oldUlcStalk;
+            dashUlcOffHighway = oldUlcOffHighway;
+            dashUlcSpeedConfig = oldUlcSpeed;
+            dashUlcBlindSpotConfig = oldUlcBlind;
+            dashSummonEuUnlock = oldSummonEu;
+            dashHandsOn247DryRunEnabled = oldHands247;
             pluginSetReplayCountLocked(oldReplay);
             hw3OffsetSlew = oldSlew;
             hw3SlewRate = oldSlewRate;
@@ -6634,6 +6868,7 @@ static void dashInitHandlers()
     for (int i = 0; i < 3; i++)
     {
         handlerPool[i]->onFrame = mcpDashOnFrame;
+        handlerPool[i]->onExperimentalFrame = mcpDashOnExperimentalFrame;
         handlerPool[i]->onSpeedProfileChanged = mcpDashOnActiveSpeedProfile;
     }
     // The active car handler already observes every original RX frame.
@@ -6729,11 +6964,13 @@ static void mcpDashboardSetup(CarManagerBase *handler, CanDriver *driver)
     if (dashTxSessionNonce == 0)
         dashTxSessionNonce = 1;
     dashTxScheduler.bind(dashDriver, dashTxPolicyContext);
+    dashCanBTxScheduler.bind(dashDriver, dashCanBTxPolicyContext);
     appDashboardTxObserver = mcpDashOnTxFrame;
     appDashboardTxAttemptObserver = mcpDashOnTxAttemptFrame;
     appDashboardDecisionObserver = mcpDashOnInjectionDecision;
     appDashboardMasterTxEnabled = []() { return static_cast<bool>(canActive); };
     appDashboardAnomalyBlocksTx = dashAnomalyBlocksTx;
+    appDashboardActivityTxAllowed = dashActivityTxAllowed;
     pluginSetDiagnosticsLogger([](const char *message)
                                { dashLog(String(message)); });
     dashResetWriteProbe();

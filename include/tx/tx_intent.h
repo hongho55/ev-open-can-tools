@@ -23,6 +23,8 @@ enum Requirement : uint16_t
     RequireParked = 1U << 2,
     RequireStationary = 1U << 3,
     RequireControlConnected = 1U << 4,
+    RequireAssistActivity = 1U << 5,
+    RequireSummonEligible = 1U << 6,
 };
 
 struct MuxConstraint
@@ -66,6 +68,8 @@ struct PolicyContext
     bool vehicleFresh = false;
     bool parked = false;
     bool stationary = false;
+    bool assistActivity = false;
+    bool summonEligible = false;
     bool busHealthy = false;
     bool otaInhibit = false;
     bool controlAuthorized = false;
@@ -182,6 +186,10 @@ inline Result evaluate(const TxIntent &intent, const PolicyContext &context)
     if ((intent.requirements & RequireParked) && !context.parked)
         return blocked(intent, Reason::StateBlocked);
     if ((intent.requirements & RequireStationary) && !context.stationary)
+        return blocked(intent, Reason::StateBlocked);
+    if ((intent.requirements & RequireAssistActivity) && !context.assistActivity)
+        return blocked(intent, Reason::StateBlocked);
+    if ((intent.requirements & RequireSummonEligible) && !context.summonEligible)
         return blocked(intent, Reason::StateBlocked);
     if (!context.busHealthy) return blocked(intent, Reason::BusUnhealthy);
     if ((intent.semanticBus != CAN_BUS_CH && intent.semanticBus != CAN_BUS_VEH &&

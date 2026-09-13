@@ -130,6 +130,7 @@ struct CarManagerBase
     bool lastAca = false;
 
     void (*onFrame)(const CanFrame &) = nullptr;
+    void (*onExperimentalFrame)(const CanFrame &, CanDriver &) = nullptr;
     void (*onSend)(uint8_t mux, bool ok) = nullptr;
     void (*onSpeedProfileChanged)(uint8_t profile) = nullptr;
     uint32_t speedProfileChangeMs = 0;
@@ -381,10 +382,10 @@ struct LegacyHandler : public CarManagerBase
     {
 #if defined(ESP32_DASHBOARD)
         // Explicit hex IDs: BMS 0x292 is 658 decimal, not 292.
-        static constexpr uint32_t ids[] = {0x045, 0x108, 0x118, 0x129, 0x132, 0x145, 0x175, 0x186, 0x238, 0x257, 0x286, 0x292, 0x2B9, 0x311, 0x312, 0x33A, 0x370, 0x389, 0x399, 0x39B, 0x3EE, 0x3F8, 0x3FD, 0x488, 0x7FF};
+        static constexpr uint32_t ids[] = {0x045, 0x108, 0x118, 0x129, 0x132, 0x145, 0x175, 0x186, 0x238, 0x247, 0x257, 0x286, 0x292, 0x2B9, 0x311, 0x312, 0x33A, 0x370, 0x389, 0x399, 0x39B, 0x3E9, 0x3EE, 0x3F8, 0x3FD, 0x488, 0x7FF};
         return ids;
     }
-    uint8_t filterIdCount() const override { return 25; }
+    uint8_t filterIdCount() const override { return 27; }
 #else
         static constexpr uint32_t ids[] = {69, 280, 390, 599, 921, 1006, 1016};
         return ids;
@@ -396,6 +397,8 @@ struct LegacyHandler : public CarManagerBase
     {
         if (onFrame)
             onFrame(frame);
+        if (onExperimentalFrame)
+            onExperimentalFrame(frame, driver);
         updateGateFrameDiagnostics(frame);
         // STW_ACTN_RQ (0x045 = 69): Follow-Distance-Stalk as Source for Profile Mapping
         // byte[1]: 0x00=Pos1, 0x21=Pos2, 0x42=Pos3, 0x64=Pos4, 0x85=Pos5, 0xA6=Pos6, 0xC8=Pos7
@@ -523,10 +526,10 @@ struct HW3Handler : public CarManagerBase
     {
 #if defined(ESP32_DASHBOARD)
         // Explicit hex IDs: BMS 0x292 is 658 decimal, not 292.
-        static constexpr uint32_t ids[] = {0x045, 0x108, 0x118, 0x129, 0x132, 0x145, 0x175, 0x186, 0x238, 0x257, 0x286, 0x292, 0x2B9, 0x311, 0x312, 0x33A, 0x370, 0x389, 0x399, 0x39B, 0x3EE, 0x3F8, 0x3FD, 0x488, 0x7FF};
+        static constexpr uint32_t ids[] = {0x045, 0x108, 0x118, 0x129, 0x132, 0x145, 0x175, 0x186, 0x238, 0x247, 0x257, 0x286, 0x292, 0x2B9, 0x311, 0x312, 0x33A, 0x370, 0x389, 0x399, 0x39B, 0x3E9, 0x3EE, 0x3F8, 0x3FD, 0x488, 0x7FF};
         return ids;
     }
-    uint8_t filterIdCount() const override { return 25; }
+    uint8_t filterIdCount() const override { return 27; }
 #else
         static constexpr uint32_t ids[] = {280, 390, 599, 921, 1016, 1021, 2047};
         return ids;
@@ -538,6 +541,8 @@ struct HW3Handler : public CarManagerBase
     {
         if (onFrame)
             onFrame(frame);
+        if (onExperimentalFrame)
+            onExperimentalFrame(frame, driver);
         updateGateFrameDiagnostics(frame);
         if (frame.id == 280)
         {
@@ -1086,10 +1091,10 @@ struct HW4Handler : public CarManagerBase
 #else
 #if defined(ESP32_DASHBOARD)
         // Explicit hex IDs: BMS 0x292 is 658 decimal, not 292.
-        static constexpr uint32_t ids[] = {0x045, 0x108, 0x118, 0x129, 0x132, 0x145, 0x175, 0x186, 0x238, 0x257, 0x286, 0x292, 0x2B9, 0x311, 0x312, 0x33A, 0x370, 0x389, 0x399, 0x39B, 0x3EE, 0x3F8, 0x3FD, 0x488, 0x7FF};
+        static constexpr uint32_t ids[] = {0x045, 0x108, 0x118, 0x129, 0x132, 0x145, 0x175, 0x186, 0x238, 0x247, 0x257, 0x286, 0x292, 0x2B9, 0x311, 0x312, 0x33A, 0x370, 0x389, 0x399, 0x39B, 0x3E9, 0x3EE, 0x3F8, 0x3FD, 0x488, 0x7FF};
         return ids;
     }
-    uint8_t filterIdCount() const override { return 25; }
+    uint8_t filterIdCount() const override { return 27; }
 #else
         static constexpr uint32_t ids[] = {280, 390, 599, 923, 1016, 1021, 2047};
         return ids;
@@ -1102,6 +1107,8 @@ struct HW4Handler : public CarManagerBase
     {
         if (onFrame)
             onFrame(frame);
+        if (onExperimentalFrame)
+            onExperimentalFrame(frame, driver);
         updateGateFrameDiagnostics(frame);
         if (frame.id == 280)
         {

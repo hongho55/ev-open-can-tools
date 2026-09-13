@@ -45,6 +45,8 @@ static PolicyContext context(uint32_t now)
     out.vehicleFresh = true;
     out.parked = true;
     out.stationary = true;
+    out.assistActivity = true;
+    out.summonEligible = true;
     out.busHealthy = true;
     out.controlAuthorized = true;
     out.controlConnected = true;
@@ -84,6 +86,47 @@ int main()
         deniedSemantic.semanticBus = deniedSemantic.frame.bus = CAN_BUS_VEH;
         assert(evaluate(deniedSemantic, context(200)).reason == Reason::SemanticDeny);
     }
+
+    const uint32_t assistIds[] = {0x3F8U, 0x3FDU};
+    for (uint32_t assistId : assistIds)
+    {
+        TxIntent assist = intent(static_cast<uint16_t>(assistId), assistId);
+        assist.source = Source::BuiltIn;
+        assist.expectedId = assist.frame.id = assistId;
+        assist.semanticBus = assist.frame.bus = CAN_BUS_CH;
+        assist.physicalBus = assist.frame.physicalBus = CAN_BUS_CAN_B;
+        assist.counter = CounterStrategy::PreserveObserved;
+        assist.checksum = ChecksumStrategy::PreserveObserved;
+        assert(evaluate(assist, context(200)).allowed);
+    }
+
+    TxIntent summon = intent(0x3FD, 0x3FD);
+    summon.source = Source::BuiltIn;
+    summon.expectedId = summon.frame.id = 0x3FD;
+    summon.semanticBus = summon.frame.bus = CAN_BUS_CH;
+    summon.physicalBus = summon.frame.physicalBus = CAN_BUS_CAN_B;
+    summon.counter = CounterStrategy::PreserveObserved;
+    summon.checksum = ChecksumStrategy::PreserveObserved;
+    summon.requirements = static_cast<uint16_t>(RequireStartupFresh |
+                                                RequireVehicleFresh |
+                                                RequireSummonEligible);
+    PolicyContext noSummon = context(200);
+    noSummon.summonEligible = false;
+    assert(evaluate(summon, noSummon).reason == Reason::StateBlocked);
+
+    TxIntent ulc = intent(0x3F8, 0x3F8);
+    ulc.source = Source::BuiltIn;
+    ulc.expectedId = ulc.frame.id = 0x3F8;
+    ulc.semanticBus = ulc.frame.bus = CAN_BUS_CH;
+    ulc.physicalBus = ulc.frame.physicalBus = CAN_BUS_CAN_B;
+    ulc.counter = CounterStrategy::PreserveObserved;
+    ulc.checksum = ChecksumStrategy::PreserveObserved;
+    ulc.requirements = static_cast<uint16_t>(RequireStartupFresh |
+                                             RequireVehicleFresh |
+                                             RequireAssistActivity);
+    PolicyContext noAssistActivity = context(200);
+    noAssistActivity.assistActivity = false;
+    assert(evaluate(ulc, noAssistActivity).reason == Reason::StateBlocked);
 
     TxIntent badIntegrity = intent(3, 3);
     badIntegrity.checksum = ChecksumStrategy::Unknown;

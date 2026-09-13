@@ -104,6 +104,7 @@ static void (*appDashboardTxAttemptObserver)(const CanFrame &, bool, bool) = nul
 static void (*appDashboardDecisionObserver)(bool, const char *) = nullptr;
 static bool (*appDashboardMasterTxEnabled)() = nullptr;
 static bool (*appDashboardAnomalyBlocksTx)() = nullptr;
+static bool (*appDashboardActivityTxAllowed)() = nullptr;
 static Shared<bool> appMaintenanceTxInhibit{false};
 
 static bool appInjectionReady()
@@ -138,6 +139,11 @@ static bool appCanTransmitAllowed(const CanFrame &)
     if (appDashboardAnomalyBlocksTx && appDashboardAnomalyBlocksTx())
     {
         if (appDashboardDecisionObserver) appDashboardDecisionObserver(false, "can_anomaly");
+        return false;
+    }
+    if (appDashboardActivityTxAllowed && !appDashboardActivityTxAllowed())
+    {
+        if (appDashboardDecisionObserver) appDashboardDecisionObserver(false, "activity_gate_blocked");
         return false;
     }
 #endif
