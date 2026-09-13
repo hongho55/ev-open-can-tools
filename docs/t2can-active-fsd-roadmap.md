@@ -736,7 +736,13 @@ Security precondition completed:
 
 - BLE LE Secure Connections/bonding is treated only as transport security, not
   as device-owner authorization.
-- The former arbitrary `send` par...[truncated]
+- The former arbitrary `send` parser and physical transmission path were
+  removed; `send` is explicitly unsupported until a policy-checked `TxIntent`
+  path exists.
+- BLE `config` writes, `inject`, and `wifi_mode` changes fail closed pending
+  owner authorization; read-only diagnostics remain available.
+
+BLE provisioning authenticates control of this ESP32 device; it is not Tesla
 vehicle-key enrollment.
 
 Requirements:
@@ -749,6 +755,36 @@ Requirements:
 - no Tesla drive key, passive-entry key, or private owner key in logs or exports;
 - anti-replay request ID, expiry, and deduplication;
 - read-back of the applied permission state without returning secret material.
+
+Implemented device-owner path:
+
+- `include/ble/owner_authorization.h` binds authorization to the identity of an
+  encrypted, authenticated, bonded LE Secure Connections peer. No reusable app
+  secret or private owner key is accepted by the command protocol.
+- A fresh device exposes one five-minute enrollment window. Enrollment defaults
+  to diagnostics plus admin; OTA and CAN-arm permissions remain separate and
+  disabled until an authorized update.
+- Owner mutations require a non-zero request ID and a device-uptime issuance and
+  expiry window of at most 30 seconds. A bounded replay cache rejects duplicate
+  request IDs.
+- Owner identity, permission mask, and generation are committed as one compact
+  NVS record and read back before the runtime state changes. Invalid storage is
+  fail-closed and never reopens enrollment.
+- `owner_status` returns schema, enrollment state, non-secret fingerprint,
+  generation, and permission booleans. It never returns the bonded address or
+  BLE key material.
+- `owner_revoke` writes a closed tombstone. `owner_replace_begin` is a distinct
+  owner-authorized operation that opens a new five-minute window; a reboot
+  during replacement closes that window rather than allowing takeover.
+- Granting CAN-arm permission does not enable injection. Raw BLE send, config
+  writes, injection, and mode changes remain blocked until the common
+  `TxIntent` path exists.
+
+Verification completed: owner-core native assertions cover enrollment, insecure
+and wrong peers, permissions, request expiry, replay, wraparound, persistence
+restore, revocation, and replacement. The BLE-enabled `lilygo_t2can` firmware
+build passes. BLE pairing/NVS read-back on the physical unit is reserved for the
+final focused S20/device session.
 
 ### P1.8 Private Web remote CAN control
 

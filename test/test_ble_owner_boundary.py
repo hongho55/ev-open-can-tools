@@ -33,6 +33,21 @@ class BleOwnerBoundaryTests(unittest.TestCase):
         self.assertIn("ctrlBuildConfigJson()", self.source)
         self.assertIn("dashBuildBleMaintenanceSnapshotJson()", self.source)
 
+    def test_owner_lifecycle_is_wired_without_enabling_can(self) -> None:
+        for command in (
+            "owner_status",
+            "owner_enroll",
+            "owner_permissions",
+            "owner_revoke",
+            "owner_replace_begin",
+        ):
+            self.assertIn(f'strcmp(cmd, "{command}")', self.source)
+        self.assertIn('storage.putString("record", expected)', self.source)
+        self.assertIn('verify.getString("record", "")', self.source)
+        self.assertIn("actual == expected", self.source)
+        self.assertNotIn("privateKey", self.source)
+        self.assertNotIn("ownerSecret", self.source)
+
 
 if __name__ == "__main__":
     unittest.main()

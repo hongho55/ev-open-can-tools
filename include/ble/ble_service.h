@@ -13,7 +13,9 @@
 //
 // A written command is a JSON object {"cmd":"...","args":{...}} terminated by
 // '\n'. Supported read-only maintenance commands include `status`, `stats`, and
-// `snapshot`; the snapshot has the versioned schema used by the Mac collector.
+// `snapshot`; owner lifecycle commands are `owner_status`, `owner_enroll`,
+// `owner_permissions`, `owner_revoke`, and `owner_replace_begin`. The snapshot
+// has the versioned schema used by the Mac collector.
 // Writes are accumulated until that newline arrives, so a command longer
 // than one ATT write is simply split by the client -- but a SINGLE write may not
 // exceed 255 bytes (see the flat buffer in bleCmdWriteCb).
@@ -28,7 +30,10 @@
 #if defined(BLE_APP) && !defined(NATIVE_BUILD) && defined(CONFIG_BT_NIMBLE_ENABLED)
 
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include "esp_log.h"
+#include "ble/owner_authorization.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
@@ -58,10 +63,208 @@ static uint16_t bleConnHandle = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t bleMtu = 23;
 static uint8_t bleOwnAddrType = 0;
 static String bleCmdBuf;
+static BleOwner::Authorization bleOwnerAuthorization;
 
 static void bleStartAdvertising();
+static String bleReject(const char *error, const char *reason, int index = -1);
 
-static String bleReject(const char *error, const char *reason, int index = -1)
+static bool bleParseAddressHex(const char *hex, uint8_t out[6])
+{
+    if (!hex || strlen(hex) != 12) return false;
+    for (uint8_t i = 0; i < 6; ++i)
+    {
+        char pair[3] = {hex[i * 2], hex[i * 2 + 1], '\0'};
+        char *end = nullptr;
+        const unsigned long value = strtoul(pair, &end, 16);
+        if (!end || *end != '\0') return false;
+        out[i] = static_cast<uint8_t>(value);
+    }
+    return true;
+}
+
+static String bleOwnerRecord(const BleOwner::Authorization &auth)
+{
+    char record[80];
+    const BleOwner::Status status = auth.status(millis());
+    if (!status.enrolled)
+    {
+        snprintf(record, sizeof(record), "v1|R|%lu",
+                 static_cast<unsigned long>(status.generation));
+        return String(record);
+    }
+    const BleOwner::Peer &owner = auth.ownerRecord();
+    char address[13];
+    snprintf(address, sizeof(address), "%02x%02x%02x%02x%02x%02x",
+             owner.address[0], owner.address[1], owner.address[2],
+             owner.address[3], owner.address[4], owner.address[5]);
+    snprintf(record, sizeof(record), "v1|E|%u|%s|%u|%lu",
+             static_cast<unsigned>(owner.addressType), address,
+             static_cast<unsigned>(auth.permissions()),
+             static_cast<unsigned long>(auth.generation()));
+    return String(record);
+}
+
+static bool blePersistOwner(const BleOwner::Authorization &auth)
+{
+    const String expected = bleOwnerRecord(auth);
+    Preferences storage;
+    if (!storage.begin("bleowner", false)) return false;
+    const bool wrote = storage.putString("record", expected);
+    const bool committed = storage.end();
+    if (!wrote || !committed) return false;
+
+    Preferences verify;
+    if (!verify.begin("bleowner", true)) return false;
+    const String actual = verify.getString("record", "");
+    const bool closed = verify.end();
+    return closed && actual == expected;
+}
+
+static void bleLoadOwner()
+{
+    Preferences storage;
+    if (!storage.begin("bleowner", true))
+    {
+        bleOwnerAuthorization.restoreRevoked(0);
+        return;
+    }
+    const String record = storage.getString("record", "");
+    storage.end();
+    if (!record.length()) return; // Fresh device: bounded first enrollment remains open.
+
+    unsigned long generation = 0;
+    char trailing = '\0';
+    if (sscanf(record.c_str(), "v1|R|%lu%c", &generation, &trailing) == 1)
+    {
+        bleOwnerAuthorization.restoreRevoked(static_cast<uint32_t>(generation));
+        return;
+    }
+
+    unsigned addressType = 0;
+    unsigned permissions = 0;
+    char addressHex[13] = {};
+    if (sscanf(record.c_str(), "v1|E|%u|%12[0-9A-Fa-f]|%u|%lu%c",
+               &addressType, addressHex, &permissions, &generation, &trailing) == 4 &&
+        addressType <= 3 && permissions <= BleOwner::kAllPermissions)
+    {
+        BleOwner::Peer owner;
+        owner.addressType = static_cast<uint8_t>(addressType);
+        if (bleParseAddressHex(addressHex, owner.address))
+        {
+            bleOwnerAuthorization.restore(owner, static_cast<uint8_t>(permissions),
+                                          static_cast<uint32_t>(generation));
+            return;
+        }
+    }
+
+    // Corrupt or unknown persistent data must never reopen takeover enrollment.
+    bleOwnerAuthorization.restoreRevoked(0);
+    ESP_LOGW(kBleTag, "owner record invalid; authorization closed");
+}
+
+static bool bleCurrentPeer(BleOwner::Peer &peer)
+{
+    if (bleConnHandle == BLE_HS_CONN_HANDLE_NONE) return false;
+    struct ble_gap_conn_desc desc;
+    if (ble_gap_conn_find(bleConnHandle, &desc) != 0) return false;
+    peer.addressType = desc.peer_id_addr.type;
+    memcpy(peer.address, desc.peer_id_addr.val, sizeof(peer.address));
+    peer.encrypted = desc.sec_state.encrypted;
+    peer.authenticated = desc.sec_state.authenticated;
+    peer.bonded = desc.sec_state.bonded;
+    return true;
+}
+
+static String bleOwnerStatusJson()
+{
+    const BleOwner::Status status = bleOwnerAuthorization.status(millis());
+    char fingerprint[17];
+    snprintf(fingerprint, sizeof(fingerprint), "%016llx",
+             static_cast<unsigned long long>(status.fingerprint));
+    String out = "{\"ok\":true,\"owner\":{\"schema\":\"t2can-ble-owner-v1\"";
+    out += ",\"enrolled\":";
+    out += status.enrolled ? "true" : "false";
+    out += ",\"enrollmentOpen\":";
+    out += status.enrollmentOpen ? "true" : "false";
+    out += ",\"enrollmentRemainingMs\":";
+    out += static_cast<unsigned long>(status.enrollmentRemainingMs);
+    out += ",\"generation\":";
+    out += static_cast<unsigned long>(status.generation);
+    out += ",\"fingerprint\":\"";
+    out += status.enrolled ? fingerprint : "";
+    out += "\",\"permissions\":{\"diagnostics\":";
+    out += (status.permissions & BleOwner::Diagnostics) ? "true" : "false";
+    out += ",\"ota\":";
+    out += (status.permissions & BleOwner::Ota) ? "true" : "false";
+    out += ",\"canArm\":";
+    out += (status.permissions & BleOwner::CanArm) ? "true" : "false";
+    out += ",\"admin\":";
+    out += (status.permissions & BleOwner::Admin) ? "true" : "false";
+    out += "}}}";
+    return out;
+}
+
+static bool bleParseOwnerRequest(JsonObjectConst root, BleOwner::Request &request)
+{
+    if (!root["requestId"].is<uint64_t>() ||
+        !root["issuedAtMs"].is<uint32_t>() ||
+        !root["expiresAtMs"].is<uint32_t>())
+        return false;
+    request.id = root["requestId"].as<uint64_t>();
+    request.issuedAtMs = root["issuedAtMs"].as<uint32_t>();
+    request.expiresAtMs = root["expiresAtMs"].as<uint32_t>();
+    return true;
+}
+
+static String bleOwnerDecision(BleOwner::Decision decision)
+{
+    return bleReject("owner_authorization", BleOwner::decisionName(decision));
+}
+
+static String bleHandleOwnerEnroll()
+{
+    BleOwner::Peer peer;
+    if (!bleCurrentPeer(peer)) return bleReject("owner_authorization", "no_peer");
+    BleOwner::Authorization candidate = bleOwnerAuthorization;
+    const BleOwner::Decision decision = candidate.enroll(peer, millis());
+    if (decision != BleOwner::Decision::Allowed) return bleOwnerDecision(decision);
+    if (!blePersistOwner(candidate)) return bleReject("storage", "owner_write_failed");
+    bleOwnerAuthorization = candidate;
+    return bleOwnerStatusJson();
+}
+
+static String bleHandleOwnerMutation(const char *cmd, JsonObjectConst root)
+{
+    BleOwner::Peer peer;
+    BleOwner::Request request;
+    if (!bleCurrentPeer(peer)) return bleReject("owner_authorization", "no_peer");
+    if (!bleParseOwnerRequest(root, request))
+        return bleReject("owner_authorization", "invalid_request");
+
+    BleOwner::Authorization candidate = bleOwnerAuthorization;
+    BleOwner::Decision decision = BleOwner::Decision::InvalidRequest;
+    if (strcmp(cmd, "owner_permissions") == 0)
+    {
+        JsonObjectConst args = root["args"];
+        if (args.isNull() || !args["mask"].is<uint8_t>())
+            return bleReject("owner_authorization", "invalid_permissions");
+        const uint8_t mask = args["mask"].as<uint8_t>();
+        if ((mask & ~BleOwner::kAllPermissions) != 0)
+            return bleReject("owner_authorization", "invalid_permissions");
+        decision = candidate.updatePermissions(peer, request, mask, millis());
+    }
+    else if (strcmp(cmd, "owner_revoke") == 0)
+        decision = candidate.revoke(peer, request, millis());
+    else if (strcmp(cmd, "owner_replace_begin") == 0)
+        decision = candidate.beginReplacement(peer, request, millis());
+
+    if (decision != BleOwner::Decision::Allowed) return bleOwnerDecision(decision);
+    if (!blePersistOwner(candidate)) return bleReject("storage", "owner_write_failed");
+    bleOwnerAuthorization = candidate;
+    return bleOwnerStatusJson();
+}
+
+static String bleReject(const char *error, const char *reason, int index)
 {
     String j = "{\"ok\":false,\"error\":\"";
     j += error;
@@ -147,6 +350,14 @@ static String bleDispatchCommand(JsonObjectConst root)
         return bleBuildStatsJson();
     if (strcmp(cmd, "snapshot") == 0)
         return dashBuildBleMaintenanceSnapshotJson();
+    if (strcmp(cmd, "owner_status") == 0)
+        return bleOwnerStatusJson();
+    if (strcmp(cmd, "owner_enroll") == 0)
+        return bleHandleOwnerEnroll();
+    if (strcmp(cmd, "owner_permissions") == 0 ||
+        strcmp(cmd, "owner_revoke") == 0 ||
+        strcmp(cmd, "owner_replace_begin") == 0)
+        return bleHandleOwnerMutation(cmd, root);
     if (strcmp(cmd, "config") == 0)
     {
         // No args means read; any args mean apply them. Same call the dashboard
@@ -378,6 +589,8 @@ static void bleHostTask(void * /*param*/)
 
 static void bleServiceSetup()
 {
+    bleOwnerAuthorization.begin(millis());
+    bleLoadOwner();
     if (nimble_port_init() != ESP_OK)
     {
         ESP_LOGE(kBleTag, "nimble_port_init failed");
