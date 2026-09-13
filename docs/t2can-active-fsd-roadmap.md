@@ -714,6 +714,22 @@ supporting IDs, DLCs, freshness, conflicts, and confidence. The effective layout
 changes only after explicit confirmation and is recorded as a configuration
 event. A capture, reboot, or firmware update never changes it automatically.
 
+Implemented recommendation path:
+
+- `include/chassis/layout_recommendation.h` tracks valid/rejected `0x399` and
+  `0x39B` observations, freshness, and conflicting simultaneous evidence.
+- Legacy-only fresh evidence can recommend Legacy HW3. `0x39B` without an
+  explicit profile remains `Unknown` with Standard HW4 and Highland as ranked
+  alternatives because the frame ID cannot prove the byte layout.
+- `/status.layoutRecommendation` exposes candidate, confidence, ambiguity,
+  evidence counts/freshness, alternatives, `requiresConfirmation=true`, and
+  `automaticMutation=false`.
+- The recommender has no `setLayout` or configuration-write path. Host tracker
+  assertions and the `lilygo_t2can` firmware build pass.
+
+Acceptance status: **code path complete; live `/status` read-back with vehicle
+frames is reserved for the final focused device/vehicle session.**
+
 ### P1.7 BLE device-owner provisioning
 
 BLE provisioning authenticates control of this ESP32 device; it is not Tesla

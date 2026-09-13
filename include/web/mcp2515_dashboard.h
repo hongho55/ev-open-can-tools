@@ -36,6 +36,7 @@
 #include "can_helpers.h"
 #include "plugin_engine.h"
 #include "chassis/decoder_registry.h"
+#include "chassis/layout_recommendation.h"
 #include "chassis/telemetry_state.h"
 #include "chassis/event_recorder.h"
 #if defined(DRIVER_ESP32_EXT_MCP2515)
@@ -276,6 +277,7 @@ static CanDriver *dashDriver = nullptr;
 // Read-only telemetry collected from explicitly classified CAN frames. This
 // state never feeds a transmit path; it is only exposed through /status.
 static Chassis::TelemetryState dashTelemetry{Chassis::DasLayout::Unknown, 1500};
+static Chassis::LayoutRecommendation::Tracker dashLayoutTracker;
 static Chassis::EventRecorder dashRecorder;
 class DashRecorderConfigUpdate
 {
@@ -523,6 +525,7 @@ static void mcpDashOnFrame(const CanFrame &f)
     DashDataGuard guard;
     unsigned long now = millis();
     const bool telemetryAccepted = dashTelemetry.observe(f, now);
+    dashLayoutTracker.observe(f, now);
     dashRecorder.observe(f, now);
     const Chassis::TelemetrySnapshot telemetry = dashTelemetry.snapshot(now);
     if (telemetryAccepted && (f.id == 0x399 || f.id == 0x39B))
@@ -3078,6 +3081,8 @@ static void handleStatus()
     bool vehicleOnlineSnapshot = false;
     DashWriteProbe writeProbeSnapshot = {};
     Chassis::TelemetrySnapshot telemetrySnapshot = {};
+    Chassis::LayoutRecommendation::Evidence layoutEvidence = {};
+    Chassis::LayoutRecommendation::Result layoutRecommendation = {};
     bool recorderArmed = false, recorderFrozen = false, recorderUsingPsram = false;
     size_t recorderRawCount = 0, recorderStateCount = 0, recorderRawCapacity = 0, recorderStateCapacity = 0;
     uint32_t recorderCoverage = 0, recorderStateCoverage = 0, recorderDrops = 0;
@@ -3099,6 +3104,11 @@ static void handleStatus()
                                 !Chassis::EventRecorder::postDeadlineReached(now, dashLastVehicleFrameMs);
         writeProbeSnapshot = dashWriteProbe;
         telemetrySnapshot = dashTelemetry.snapshot(now);
+        layoutEvidence = dashLayoutTracker.evidence(
+            now, 1500,
+            static_cast<uint8_t>(dashDasLayoutOverride) == 2,
+            static_cast<uint8_t>(dashDasLayoutOverride) == 3);
+        layoutRecommendation = Chassis::LayoutRecommendation::recommend(layoutEvidence);
         recorderArmed = dashRecorder.enabled();
         recorderFrozen = dashRecorder.frozen();
         recorderRawCount = dashRecorder.rawCount();
@@ -3146,6 +3156,26 @@ static void handleStatus()
         apGate.enabled ? "true" : "false", apGate.allowed ? "true" : "false",
         apGate.apActive ? "true" : "false", apGate.parked ? "true" : "false",
         apGate.summoning ? "true" : "false", apGate.stableMs, apGate.reason);
+    json.appendf(
+        ",\"layoutRecommendation\":{\"candidate\":\"%s\",\"confidence\":\"%s\","
+        "\"ambiguous\":%s,\"requiresConfirmation\":true,\"automaticMutation\":false,"
+        "\"evidence\":{\"legacy399Valid\":%lu,\"hw439bValid\":%lu,\"rejectedDlc\":%lu,"
+        "\"legacyFresh\":%s,\"hw4Fresh\":%s},\"alternatives\":[",
+        Chassis::LayoutRecommendation::layoutName(layoutRecommendation.candidate),
+        Chassis::LayoutRecommendation::confidenceName(layoutRecommendation.confidence),
+        layoutRecommendation.ambiguous ? "true" : "false",
+        static_cast<unsigned long>(layoutEvidence.legacy399Valid),
+        static_cast<unsigned long>(layoutEvidence.hw4_39bValid),
+        static_cast<unsigned long>(layoutEvidence.rejectedDlc),
+        layoutEvidence.legacyFresh ? "true" : "false",
+        layoutEvidence.hw4Fresh ? "true" : "false");
+    for (uint8_t i = 0; i < layoutRecommendation.alternativeCount; i++)
+    {
+        if (i > 0) json.append(",");
+        json.appendf("\"%s\"", Chassis::LayoutRecommendation::layoutName(
+                                   layoutRecommendation.alternatives[i]));
+    }
+    json.append("]}");
 #ifdef ESP_PLATFORM
     json.appendf(
         ",\"runtime\":{\"uptimeMs\":%lu,\"canFrames\":%lu,\"canAgeMs\":%lu,"
