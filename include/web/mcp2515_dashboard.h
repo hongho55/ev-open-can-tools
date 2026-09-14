@@ -930,9 +930,10 @@ static TxControl::PolicyContext dashTxPolicyContextForBus(uint8_t physicalBus)
         summonEligible = summonDecision.allowed;
     }
     const bool freshApActive = telemetry.dasSeen && isDASAutopilotActive(telemetry.apState);
-    // AP gate OFF is the explicit legacy/pre-2026.14 continuous mode. When ON,
-    // individual assist intents inherit the same validated activity conditions.
-    context.summonEligible = !static_cast<bool>(apInjectionGate) || summonEligible;
+    // AP gate OFF preserves the explicit legacy/pre-2026.14 bypass only for
+    // general assist activity. Summon capability TX always requires the
+    // independently evaluated strict Summon policy.
+    context.summonEligible = summonEligible;
     context.assistActivity = !static_cast<bool>(apInjectionGate) ||
                              freshApActive || summonEligible;
     bool ready = false;

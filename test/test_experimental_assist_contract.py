@@ -59,6 +59,13 @@ class ExperimentalAssistContract(unittest.TestCase):
         self.assertIn("appDashboardActivityTxAllowed && !appDashboardActivityTxAllowed()", APP)
         self.assertIn('"activity_gate_blocked"', APP)
 
+    def test_summon_policy_cannot_use_the_legacy_ap_gate_bypass(self):
+        self.assertIn("context.summonEligible = summonEligible;", DASH)
+        self.assertNotIn(
+            "context.summonEligible = !static_cast<bool>(apInjectionGate) || summonEligible;",
+            DASH,
+        )
+
     def test_hw4_summon_has_no_all_cars_catalog_bypass(self):
         self.assertNotIn("Summon EU Unlock for all cars", UI)
 
