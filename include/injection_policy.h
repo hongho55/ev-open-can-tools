@@ -4,7 +4,7 @@
 
 #include "shared_types.h"
 
-inline constexpr uint32_t kSummonInjectionFreshnessMs = 500;
+inline constexpr uint32_t kSummonInjectionFreshnessMs = 1000;
 inline constexpr uint32_t kSummonInjectionRequestLeadMs = 2000;
 inline constexpr uint16_t kDiVehicleSpeedStationaryRaw = 500;
 inline constexpr uint16_t kDiVehicleSpeedMaxValidRaw = 4062;

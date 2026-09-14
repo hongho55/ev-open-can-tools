@@ -37,7 +37,7 @@ class EspIdfStabilityRegressionTests(unittest.TestCase):
 
     def test_summon_only_policy_is_central_and_clears_pending_transmit(self) -> None:
         self.assertIn("evaluateSummonInjectionPolicy", self.injection_policy)
-        self.assertIn("kSummonInjectionFreshnessMs = 500", self.injection_policy)
+        self.assertIn("kSummonInjectionFreshnessMs = 1000", self.injection_policy)
         self.assertIn("summonOnlyInjectionDecisionAt", self.app)
         self.assertIn("sendAllowed(frame)", self.twai)
         self.assertIn("sendAllowed(frame)", self.external_mcp)

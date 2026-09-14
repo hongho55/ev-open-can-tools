@@ -116,6 +116,15 @@ void test_transition_from_summon_to_autopilot_stops_immediately()
                 SummonInjectionState::AutopilotActive);
 }
 
+void test_shared_firmware_freshness_boundary()
+{
+    TEST_ASSERT_EQUAL_UINT32(1000, kSummonInjectionFreshnessMs);
+    assertState(evaluateSummonInjectionPolicy(freshParkedSnapshot(), 1000), true,
+                SummonInjectionState::AllowedParked);
+    assertState(evaluateSummonInjectionPolicy(freshParkedSnapshot(), 1001), false,
+                SummonInjectionState::StaleDiState);
+}
+
 void test_missing_or_stale_can_state_blocks_injection()
 {
     SummonInjectionSnapshot missing = freshParkedSnapshot();
@@ -201,6 +210,7 @@ int main()
     RUN_TEST(test_moving_without_confirmed_summon_blocks_injection);
     RUN_TEST(test_transition_from_summon_to_manual_stops_immediately);
     RUN_TEST(test_transition_from_summon_to_autopilot_stops_immediately);
+    RUN_TEST(test_shared_firmware_freshness_boundary);
     RUN_TEST(test_missing_or_stale_can_state_blocks_injection);
     RUN_TEST(test_contradictory_state_signals_block_injection);
     RUN_TEST(test_invalid_sna_signals_block_injection);
