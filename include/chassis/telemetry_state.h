@@ -170,6 +170,15 @@ private:
         return (bus & accepted) != 0 && (bus & ~accepted) == 0;
     }
 
+    static bool observedCanAHw4Das(const CanFrame &frame)
+    {
+        // Some dual-CAN Highland captures carry 0x39B on the physical MCP2515
+        // side even though the wrapper labels that side as Party CAN. Keep the
+        // exception ID- and provenance-specific instead of reclassifying CAN A.
+        return frame.id == kDasHw4Id && frame.physicalBus == CAN_BUS_CAN_A &&
+               partyBus(frame.bus);
+    }
+
     bool fresh(bool seen, uint32_t sampleMs, uint32_t nowMs) const
     {
         return seen && timeoutMs_ > 0 && timeoutMs_ < 0x80000000u &&
@@ -189,7 +198,7 @@ private:
 
     bool observeChassis(const CanFrame &frame, uint32_t nowMs)
     {
-        if (!chassisBus(frame.bus)) return false;
+        if (!chassisBus(frame.bus) && !observedCanAHw4Das(frame)) return false;
 
         switch (frame.id)
         {

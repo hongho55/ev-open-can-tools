@@ -618,6 +618,9 @@ static void mcpDashOnInjectionDecision(bool allowed, const char *reason)
     else if (reason && strcmp(reason, "can_disabled") == 0) code = 4;
     else if (reason && strcmp(reason, "ap_gate_blocked") == 0) code = 5;
     else if (reason && strcmp(reason, "nag_disabled") == 0) code = 6;
+    else if (reason && strcmp(reason, "maintenance") == 0) code = 7;
+    else if (reason && strcmp(reason, "can_anomaly") == 0) code = 8;
+    else if (reason && strcmp(reason, "activity_gate_blocked") == 0) code = 9;
     DashDataGuard guard;
     dashRecorder.recordInjectionDecision(allowed, code, millis());
 }

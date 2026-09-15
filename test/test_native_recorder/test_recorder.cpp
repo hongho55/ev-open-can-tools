@@ -38,6 +38,20 @@ static void test_raw_rx_tx_bus_result()
            raw.frame.bus == CAN_BUS_ANY && raw.frame.physicalBus == CAN_BUS_CAN_B);
 }
 
+static void test_vehicle_log_focus_ids_are_recorded()
+{
+    EventRecorder r;
+    r.enable(true);
+    r.observe(frame(0x286, CAN_BUS_CH), 1);
+    r.observe(frame(0x3F8, CAN_BUS_CH), 2);
+    r.observe(frame(0x287, CAN_BUS_CH), 3);
+
+    assert(r.rawCount() == 2);
+    EventRecorder::RawRecord raw;
+    assert(r.rawRecord(0, raw) && raw.frame.id == 0x286);
+    assert(r.rawRecord(1, raw) && raw.frame.id == 0x3F8);
+}
+
 static void test_state_schema_and_reasons()
 {
     EventRecorder r;
@@ -234,6 +248,7 @@ int main()
 {
     UNITY_BEGIN();
     RUN_TEST(test_raw_rx_tx_bus_result);
+    RUN_TEST(test_vehicle_log_focus_ids_are_recorded);
     RUN_TEST(test_state_schema_and_reasons);
     RUN_TEST(test_ring_drop_coverage_and_monotonic_freeze);
     RUN_TEST(test_state_deadline_is_enforced);

@@ -82,10 +82,19 @@ class VehicleFlightRecorderWiringTests(unittest.TestCase):
     def test_health_and_upstream_gate_outcomes_are_recorded(self):
         for token in ("recordCanHealth", "recordCanLiveness", "physicalHealth", "healthErrorCount",
                       "physicalBus", "onSendAttempt", "CanHealth", "CanLiveness", "can_disabled",
-                      "ap_gate_blocked", "nag_disabled", "return saved", "sendWithAttempt",
+                      "ap_gate_blocked", "nag_disabled", "can_anomaly", "activity_gate_blocked",
+                      "maintenance", "return saved", "sendWithAttempt",
                       "reportAttempt(frame, CAN_BUS_CAN_A", "reportAttempt(frame, CAN_BUS_CAN_B",
                       "frame.physicalBus = physicalBus()", "physicalBus\\\":%u"):
             self.assertIn(token, self.dashboard + self.recorder + self.app + self.drivers)
+
+    def test_decision_reason_codes_cover_final_tx_gates(self):
+        for mapping in (
+            'strcmp(reason, "maintenance") == 0) code = 7',
+            'strcmp(reason, "can_anomaly") == 0) code = 8',
+            'strcmp(reason, "activity_gate_blocked") == 0) code = 9',
+        ):
+            self.assertIn(mapping, self.dashboard)
 
     def test_deadline_maintenance_runtime_config_and_download_errors_are_wired(self):
         for token in ("postDeadlineReached", "dashStartRecorderMaintenance", "recorderMaintenanceTask",

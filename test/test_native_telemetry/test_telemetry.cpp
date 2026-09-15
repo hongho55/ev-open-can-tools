@@ -183,6 +183,29 @@ void test_hw4_ap_state_uses_byte1_high_nibble()
     TEST_ASSERT_EQUAL_UINT8(3, snapshot.apState);
 }
 
+void test_hw4_ap_state_accepts_observed_can_a_topology_only_for_39b()
+{
+    Chassis::TelemetryState telemetry(DasLayout::StandardHw4, 100);
+    auto das = frame(kDasHw4Id, 8, DualCanRouting::canABusLabel());
+    das.physicalBus = CAN_BUS_CAN_A;
+    das.data[1] = 0x30;
+    TEST_ASSERT_TRUE(telemetry.observe(das, 1));
+    TEST_ASSERT_EQUAL_UINT8(3, telemetry.snapshot(1).apState);
+
+    auto missingProvenance = das;
+    missingProvenance.physicalBus = CAN_BUS_ANY;
+    TEST_ASSERT_FALSE(telemetry.observe(missingProvenance, 2));
+
+    auto wrongPhysicalBus = das;
+    wrongPhysicalBus.physicalBus = CAN_BUS_CAN_B;
+    TEST_ASSERT_FALSE(telemetry.observe(wrongPhysicalBus, 3));
+
+    auto unrelatedPartyFrame = frame(kDiSystemStatusId, 8,
+                                     DualCanRouting::canABusLabel());
+    unrelatedPartyFrame.physicalBus = CAN_BUS_CAN_A;
+    TEST_ASSERT_FALSE(telemetry.observe(unrelatedPartyFrame, 4));
+}
+
 void test_highland_layout_is_explicit_byte0_opt_in()
 {
     Chassis::TelemetryState telemetry(DasLayout::HighlandHw4Byte0, 100);
@@ -233,6 +256,7 @@ int main()
     RUN_TEST(test_decoder_fields_match_flipper_layouts);
     RUN_TEST(test_right_stalk_is_read_only_exact_dlc_and_stale_safe);
     RUN_TEST(test_hw4_ap_state_uses_byte1_high_nibble);
+    RUN_TEST(test_hw4_ap_state_accepts_observed_can_a_topology_only_for_39b);
     RUN_TEST(test_highland_layout_is_explicit_byte0_opt_in);
     RUN_TEST(test_samples_expire_wrap_safely_and_reset);
     RUN_TEST(test_invalid_timeout_never_reports_live);
