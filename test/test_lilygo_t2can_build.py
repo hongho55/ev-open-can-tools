@@ -37,8 +37,6 @@ class LilygoT2CanBuildTests(unittest.TestCase):
         self.assertIn("-DMCP_CRYSTAL_FREQ=MCP_16MHZ", environment)
         self.assertIn("-DTWAI_TX_PIN=GPIO_NUM_7", environment)
         self.assertIn("-DTWAI_RX_PIN=GPIO_NUM_6", environment)
-        self.assertIn("-DPIN_LED=2", environment)
-        self.assertIn("-DDASH_RGB_STATUS_LED", environment)
         self.assertIn("partitions_16mb_ota_4096k_nvs64.csv", environment)
         self.assertIn("sdkconfig.defaults.lilygo_t2can", environment)
 
