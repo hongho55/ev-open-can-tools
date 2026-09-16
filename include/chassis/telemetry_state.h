@@ -83,6 +83,8 @@ struct TelemetrySnapshot
     bool energySeen = false;
     bool torqueSeen = false;
     bool diStateSeen = false;
+    uint8_t autoparkState = 0;
+    bool autoparkActive = false;
     bool warningSeen = false;
     uint32_t partyLastMs = 0;
 
@@ -254,6 +256,13 @@ private:
                 snapshot_.speedMs = nowMs;
             }
             break;
+        case 0x286: // DI_state: fail-closed Autopark source on physical CAN B
+            if (frame.physicalBus != CAN_BUS_CAN_B || !hasDlc(frame, 4)) return false;
+            snapshot_.autoparkState = readDIAutoparkState(frame);
+            snapshot_.autoparkActive = isDIAutoparkActive(snapshot_.autoparkState);
+            snapshot_.diStateSeen = true;
+            snapshot_.diStateMs = nowMs;
+            break;
         case 0x2B9: // DAS_control: DAS_accState, bit 12|4
             if (!hasDlc(frame, 3)) return false;
             snapshot_.dasControlSeen = true;
@@ -380,11 +389,7 @@ private:
             snapshot_.torqueSeen = accepted = true;
             snapshot_.torqueMs = nowMs;
             break;
-        case 0x286:
-            if (!hasDlc(frame, 1)) return false;
-            snapshot_.diStateSeen = accepted = true;
-            snapshot_.diStateMs = nowMs;
-            break;
+
         case 0x311:
             if (!hasDlc(frame, 1)) return false;
             snapshot_.warningSeen = accepted = true;

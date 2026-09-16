@@ -235,9 +235,9 @@ void test_experimental_ulc_preserves_unselected_fields()
 
     TEST_ASSERT_TRUE(ExperimentalAssist::applyUlc(config, frame));
     TEST_ASSERT_EQUAL_HEX8(0xA5, frame.data[0]);
-    TEST_ASSERT_EQUAL_HEX8(0x81, frame.data[1]);
+    TEST_ASSERT_EQUAL_HEX8(0x01, frame.data[1]);
     TEST_ASSERT_EQUAL_HEX8(0xDB, frame.data[6]);
-    TEST_ASSERT_EQUAL_HEX8(0x5A, frame.data[7]);
+    TEST_ASSERT_EQUAL_HEX8(0x5B, frame.data[7]);
 }
 
 void test_experimental_ulc_disabled_is_noop()

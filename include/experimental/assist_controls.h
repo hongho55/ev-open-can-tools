@@ -49,7 +49,7 @@ inline bool applyUlc(const Config &config, CanFrame &frame)
     if (config.ulcStalkConfirm)
         setField(frame, 1, 1, 0);
     if (config.ulcOffHighway)
-        setField(frame, 15, 1, 1);
+        setField(frame, 56, 1, 1);
     if (config.ulcSpeedConfig <= 3)
         setField(frame, 50, 2, config.ulcSpeedConfig);
     if (config.ulcBlindSpotConfig <= 2)

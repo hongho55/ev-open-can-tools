@@ -36,6 +36,7 @@ static PolicyContext policy(void *opaque)
     out.masterEnabled = true;
     out.startupFresh = true;
     out.vehicleFresh = true;
+    out.autoparkBlocked = false;
     out.busHealthy = true;
     return out;
 }

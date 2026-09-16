@@ -30,6 +30,28 @@ class MasterTxGateTests(unittest.TestCase):
         self.assertIn('prefs.putBool("can", canActive);', DASHBOARD)
         self.assertIn('canActive = prefs.getBool("can", kDashInjectionDefaultEnabled);', DASHBOARD)
 
+    def test_dashboard_tx_context_fails_closed_on_autopark_state(self):
+        self.assertIn(
+            "context.autoparkBlocked = !telemetry.diStateSeen || telemetry.autoparkActive;",
+            DASHBOARD,
+        )
+        body = re.search(
+            r"static bool dashActivityTxAllowed\(\)\s*\{(.*?)\n\}",
+            DASHBOARD,
+            re.S,
+        )
+        if body is None:
+            self.fail("dashActivityTxAllowed definition missing")
+        code = body.group(1)
+        fail_closed = "if (!telemetry.diStateSeen || telemetry.autoparkActive)"
+        reset_stability = "dashTrackApStableMs(false, now);"
+        optional_gate = "if (!apInjectionGate)"
+        self.assertIn(fail_closed, code)
+        self.assertIn(reset_stability, code)
+        self.assertIn(optional_gate, code)
+        self.assertLess(code.index(fail_closed), code.index(optional_gate))
+        self.assertLess(code.index(reset_stability), code.index(optional_gate))
+
 
 if __name__ == "__main__":
     unittest.main()

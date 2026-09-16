@@ -827,8 +827,6 @@ static bool dashActivityTxAllowed()
 {
     if (dashDevMode)
         return true; // simulated loopback only; no physical CAN attempt
-    if (!apInjectionGate)
-        return true;
     if (!dashHandler)
         return false;
 
@@ -838,6 +836,16 @@ static bool dashActivityTxAllowed()
         DashDataGuard guard;
         telemetry = dashTelemetry.snapshot(now);
     }
+    // This check is intentionally before the user-selectable AP gate bypass.
+    // Unknown/stale DI_state and Autopark states 3/4/9 block every physical TX.
+    if (!telemetry.diStateSeen || telemetry.autoparkActive)
+    {
+        // Do not carry a pre-Autopark AP debounce across this hard block.
+        dashTrackApStableMs(false, now);
+        return false;
+    }
+    if (!apInjectionGate)
+        return true;
     const bool apActive = telemetry.dasSeen && isDASAutopilotActive(telemetry.apState);
     const unsigned long apStableMs = dashTrackApStableMs(apActive, now);
     const bool stableAp = apActive && apStableMs >= kDashApInjectionStableDelayMs;
@@ -925,6 +933,7 @@ static TxControl::PolicyContext dashTxPolicyContextForBus(uint8_t physicalBus)
     }
     context.stationary = telemetry.speedSeen && telemetry.speedKph >= -0.1f &&
                          telemetry.speedKph <= 0.1f;
+    context.autoparkBlocked = !telemetry.diStateSeen || telemetry.autoparkActive;
     bool summonEligible = false;
     if (dashHandler)
     {

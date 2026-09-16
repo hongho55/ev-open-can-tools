@@ -47,6 +47,7 @@ static PolicyContext context(uint32_t now)
     out.stationary = true;
     out.assistActivity = true;
     out.summonEligible = true;
+    out.autoparkBlocked = false;
     out.busHealthy = true;
     out.controlAuthorized = true;
     out.controlConnected = true;
@@ -77,6 +78,10 @@ int main()
     maintenance.session = Session::Maintenance;
     maintenance.otaInhibit = true;
     assert(evaluate(valid, maintenance).reason == Reason::OtaInhibit);
+
+    PolicyContext autopark = context(200);
+    autopark.autoparkBlocked = true;
+    assert(evaluate(valid, autopark).reason == Reason::StateBlocked);
 
     const uint32_t deniedIds[] = {0x229U, 0x247U, 0x3E9U};
     for (uint32_t deniedId : deniedIds)

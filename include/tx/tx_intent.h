@@ -70,6 +70,9 @@ struct PolicyContext
     bool stationary = false;
     bool assistActivity = false;
     bool summonEligible = false;
+    // Defaults blocked so every context provider must explicitly prove that a
+    // fresh physical-CAN-B DI_state sample is outside Autopark.
+    bool autoparkBlocked = true;
     bool busHealthy = false;
     bool otaInhibit = false;
     bool controlAuthorized = false;
@@ -183,6 +186,8 @@ inline Result evaluate(const TxIntent &intent, const PolicyContext &context)
         return blocked(intent, Reason::StartupStale);
     if ((intent.requirements & RequireVehicleFresh) && !context.vehicleFresh)
         return blocked(intent, Reason::VehicleStale);
+    if (context.autoparkBlocked)
+        return blocked(intent, Reason::StateBlocked);
     if ((intent.requirements & RequireParked) && !context.parked)
         return blocked(intent, Reason::StateBlocked);
     if ((intent.requirements & RequireStationary) && !context.stationary)

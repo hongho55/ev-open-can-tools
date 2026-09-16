@@ -218,6 +218,43 @@ void test_highland_layout_is_explicit_byte0_opt_in()
     TEST_ASSERT_EQUAL_UINT8(6, snapshot.apState);
 }
 
+void test_di_autopark_requires_can_b_provenance_and_clears_explicitly()
+{
+    Chassis::TelemetryState telemetry(DasLayout::StandardHw4, 100);
+
+    auto missingProvenance = frame(0x286, 8, DualCanRouting::canBBusLabel());
+    missingProvenance.data[3] = static_cast<uint8_t>(3U << 1);
+    TEST_ASSERT_FALSE(telemetry.observe(missingProvenance, 1));
+    TEST_ASSERT_FALSE(telemetry.snapshot(1).diStateSeen);
+
+    auto wrongBus = missingProvenance;
+    wrongBus.bus = DualCanRouting::canABusLabel();
+    wrongBus.physicalBus = CAN_BUS_CAN_A;
+    TEST_ASSERT_FALSE(telemetry.observe(wrongBus, 2));
+
+    auto active = missingProvenance;
+    active.physicalBus = CAN_BUS_CAN_B;
+    for (uint8_t state : {3u, 4u, 9u})
+    {
+        active.data[3] = static_cast<uint8_t>(state << 1);
+        TEST_ASSERT_TRUE(telemetry.observe(active, 10 + state));
+        const auto snapshot = telemetry.snapshot(10 + state);
+        TEST_ASSERT_TRUE(snapshot.diStateSeen);
+        TEST_ASSERT_EQUAL_UINT8(state, snapshot.autoparkState);
+        TEST_ASSERT_TRUE(snapshot.autoparkActive);
+    }
+
+    TEST_ASSERT_TRUE(telemetry.snapshot(50).autoparkActive);
+    auto clear = active;
+    clear.data[3] = 0;
+    TEST_ASSERT_TRUE(telemetry.observe(clear, 60));
+    const auto cleared = telemetry.snapshot(60);
+    TEST_ASSERT_TRUE(cleared.diStateSeen);
+    TEST_ASSERT_EQUAL_UINT8(0, cleared.autoparkState);
+    TEST_ASSERT_FALSE(cleared.autoparkActive);
+    TEST_ASSERT_FALSE(telemetry.snapshot(160).diStateSeen);
+}
+
 void test_samples_expire_wrap_safely_and_reset()
 {
     ChassisTelemetry telemetry(DasLayout::LegacyHw3, 100);
@@ -258,6 +295,7 @@ int main()
     RUN_TEST(test_hw4_ap_state_uses_byte1_high_nibble);
     RUN_TEST(test_hw4_ap_state_accepts_observed_can_a_topology_only_for_39b);
     RUN_TEST(test_highland_layout_is_explicit_byte0_opt_in);
+    RUN_TEST(test_di_autopark_requires_can_b_provenance_and_clears_explicitly);
     RUN_TEST(test_samples_expire_wrap_safely_and_reset);
     RUN_TEST(test_invalid_timeout_never_reports_live);
     return UNITY_END();

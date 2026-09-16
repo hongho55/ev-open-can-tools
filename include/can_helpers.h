@@ -109,10 +109,19 @@ inline uint8_t readDASAutopilotStatus(const CanFrame &frame, Chassis::DasLayout 
 
 inline bool isDASAutopilotActive(uint8_t status)
 {
-    // Standard DAS_autopilotState: 2=AVAILABLE (not engaged),
-    // 3=ACTIVE_NOMINAL (first engaged), 6=ACTIVE, 8/9=abort/fault.
-    // State 6 is the normal steady engaged state seen after 2 -> 3 -> 6.
-    return status >= 3 && status <= 6;
+    // Highland safety rule: only 3..5 are engaged-driving states. State 6 is
+    // in-car Autopark and must never open the general activity TX gate.
+    return status >= 3 && status <= 5;
+}
+
+inline uint8_t readDIAutoparkState(const CanFrame &frame)
+{
+    return static_cast<uint8_t>((frame.data[3] >> 1) & 0x0F);
+}
+
+inline bool isDIAutoparkActive(uint8_t state)
+{
+    return state == 3 || state == 4 || state == 9;
 }
 
 inline uint8_t readHW4DASAutopilotStatus(const CanFrame &frame)

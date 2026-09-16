@@ -149,7 +149,7 @@ void test_isDASAutopilotActive_true_for_active_states()
     TEST_ASSERT_TRUE(isDASAutopilotActive(3));
     TEST_ASSERT_TRUE(isDASAutopilotActive(4));
     TEST_ASSERT_TRUE(isDASAutopilotActive(5));
-    TEST_ASSERT_TRUE(isDASAutopilotActive(6));
+    TEST_ASSERT_FALSE(isDASAutopilotActive(6)); // Highland in-car Autopark
     TEST_ASSERT_FALSE(isDASAutopilotActive(7));
 }
 
