@@ -330,10 +330,15 @@ void test_vehicle_ota_requires_full_byte_stability_and_explicit_clear()
     ota.data[6] = 0x15;
     TEST_ASSERT_TRUE(telemetry.observe(ota, 35));
     TEST_ASSERT_FALSE(telemetry.snapshot(35).vehicleOtaInProgress);
+    TEST_ASSERT_TRUE(telemetry.snapshot(134).vehicleOtaSeen);
+    TEST_ASSERT_TRUE(telemetry.snapshot(134).vehicleOtaFresh);
+    TEST_ASSERT_TRUE(telemetry.snapshot(135).vehicleOtaSeen);
+    TEST_ASSERT_FALSE(telemetry.snapshot(135).vehicleOtaFresh);
 
     telemetry.reset();
     const auto reset = telemetry.snapshot(40);
     TEST_ASSERT_FALSE(reset.vehicleOtaSeen);
+    TEST_ASSERT_FALSE(reset.vehicleOtaFresh);
     TEST_ASSERT_FALSE(reset.vehicleOtaInProgress);
 }
 

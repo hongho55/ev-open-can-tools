@@ -435,8 +435,9 @@ static Shared<bool> updateBetaChannel{false};
 static Shared<bool> autoUpdateEnabled{false};
 static Shared<bool> autoUpdateDone{false};            // one-shot per boot
 static Shared<unsigned long> autoUpdateEligibleAt{0}; // millis() at which auto-check may fire
-// Flip only when this repository has published and verified Sentinel artifacts.
-static constexpr bool kSentinelReleaseChannelPublished = false;
+// This channel is enabled only for releases published by the Sentinel repository.
+// Remote installs still require a trusted asset URL and GitHub's SHA-256 digest.
+static constexpr bool kSentinelReleaseChannelPublished = true;
 static unsigned long staConnectStartedAt = 0;
 static unsigned long staRetryAt = 0;
 static constexpr unsigned long kDashStaBootDelayMs = 5000;
@@ -6283,6 +6284,155 @@ static bool isTrustedFirmwareUrl(const String &url)
            url.endsWith(suffix.c_str()) && url.indexOf('?') < 0 && url.indexOf('#') < 0;
 }
 
+static bool normalizeSha256Digest(const String &rawDigest, String &hexDigest)
+{
+    hexDigest = rawDigest;
+    hexDigest.toLowerCase();
+    if (hexDigest.startsWith("sha256:"))
+        hexDigest = hexDigest.substring(7);
+    if (hexDigest.length() != 64)
+        return false;
+    for (size_t i = 0; i < hexDigest.length(); ++i)
+    {
+        const char c = hexDigest[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+            return false;
+    }
+    return true;
+}
+
+static bool dashInstallVerifiedFirmware(WiFiClient &stream, size_t contentLength,
+                                        const String &releaseDigest, String &error)
+{
+    String expectedDigest;
+    if (!normalizeSha256Digest(releaseDigest, expectedDigest))
+    {
+        error = "Missing or invalid release SHA-256 digest";
+        return false;
+    }
+    if (contentLength == 0)
+    {
+        error = "Firmware response has no Content-Length";
+        return false;
+    }
+#ifdef ESP_PLATFORM
+    if (psa_crypto_init() != PSA_SUCCESS)
+    {
+        error = "SHA-256 initialization failed";
+        return false;
+    }
+    psa_hash_operation_t operation = PSA_HASH_OPERATION_INIT;
+    if (psa_hash_setup(&operation, PSA_ALG_SHA_256) != PSA_SUCCESS)
+    {
+        error = "SHA-256 setup failed";
+        return false;
+    }
+    if (!Update.begin(contentLength))
+    {
+        psa_hash_abort(&operation);
+        error = "OTA initialization failed: " + String(Update.errorString());
+        return false;
+    }
+
+    uint8_t buffer[1024];
+    size_t written = 0;
+    while (written < contentLength)
+    {
+        const size_t remaining = contentLength - written;
+        const size_t requested = remaining < sizeof(buffer) ? remaining : sizeof(buffer);
+        const size_t count = stream.readBytes(buffer, requested);
+        if (count == 0)
+        {
+            psa_hash_abort(&operation);
+            Update.abort();
+            error = "Incomplete firmware download";
+            return false;
+        }
+        if (psa_hash_update(&operation, buffer, count) != PSA_SUCCESS)
+        {
+            psa_hash_abort(&operation);
+            Update.abort();
+            error = "SHA-256 update failed";
+            return false;
+        }
+        if (Update.write(buffer, count) != count)
+        {
+            psa_hash_abort(&operation);
+            Update.abort();
+            error = "Firmware write failed: " + String(Update.errorString());
+            return false;
+        }
+        written += count;
+    }
+
+    uint8_t digest[32] = {};
+    size_t digestLength = 0;
+    if (psa_hash_finish(&operation, digest, sizeof(digest), &digestLength) != PSA_SUCCESS ||
+        digestLength != sizeof(digest))
+    {
+        psa_hash_abort(&operation);
+        Update.abort();
+        error = "SHA-256 finalization failed";
+        return false;
+    }
+    static constexpr char kHex[] = "0123456789abcdef";
+    char actualDigest[65] = {};
+    for (size_t i = 0; i < sizeof(digest); ++i)
+    {
+        actualDigest[i * 2] = kHex[digest[i] >> 4];
+        actualDigest[i * 2 + 1] = kHex[digest[i] & 0x0F];
+    }
+    if (expectedDigest != actualDigest)
+    {
+        Update.abort();
+        error = "Firmware SHA-256 mismatch";
+        return false;
+    }
+    if (!Update.end(true) || !Update.isFinished())
+    {
+        error = "Firmware validation failed: " + String(Update.errorString());
+        return false;
+    }
+    return true;
+#else
+    (void)stream;
+    error = "Verified remote OTA is unavailable on this runtime";
+    return false;
+#endif
+}
+
+static bool dashAutomaticOtaAllowed(String &reason)
+{
+    DashDataGuard guard;
+    const Chassis::TelemetrySnapshot telemetry = dashTelemetry.snapshot(millis());
+    if (!telemetry.gearSeen || telemetry.gear != 1)
+    {
+        reason = "fresh Park gear state required";
+        return false;
+    }
+    if (!telemetry.speedSeen || telemetry.speedKph < -0.5f || telemetry.speedKph > 0.5f)
+    {
+        reason = "fresh zero-speed state required";
+        return false;
+    }
+    if (telemetry.autonomyActive)
+    {
+        reason = "autonomy is active";
+        return false;
+    }
+    if (!telemetry.vehicleOtaFresh)
+    {
+        reason = "fresh vehicle OTA state required";
+        return false;
+    }
+    if (telemetry.vehicleOtaInProgress)
+    {
+        reason = "vehicle OTA is active";
+        return false;
+    }
+    return true;
+}
+
 // Parse the release version format into (major, minor, patch, preRank, preNum).
 // Pre-release rank: 0 = stable (no suffix, sorts highest among same M.m.p),
 //                  1 = -alpha.N, 2 = -beta.N, 3 = -rc.N (higher rank = closer to stable).
@@ -6478,6 +6628,7 @@ static void handleUpdateCheck()
 
     // Find the matching firmware asset
     String downloadUrl = "";
+    String releaseDigest = "";
     const char *artifact = getFirmwareArtifact();
     JsonArray assets = release["assets"];
     for (JsonObject asset : assets)
@@ -6486,10 +6637,13 @@ static void handleUpdateCheck()
         if (name == artifact)
         {
             downloadUrl = String(asset["browser_download_url"] | "");
+            releaseDigest = String(asset["digest"] | "");
             break;
         }
     }
 
+    String normalizedDigest;
+    bool verifiedDigest = normalizeSha256Digest(releaseDigest, normalizedDigest);
     String j = "{\"ok\":true";
     j += ",\"current\":\"" + jsonEscape(FIRMWARE_VERSION) + "\"";
     j += ",\"latest\":\"" + jsonEscape(version.c_str()) + "\"";
@@ -6497,9 +6651,10 @@ static void handleUpdateCheck()
     j += ",\"prerelease\":" + String(prerelease ? "true" : "false");
     j += ",\"artifact\":\"" + jsonEscape(artifact) + "\"";
     j += ",\"url\":\"" + jsonEscape(downloadUrl.c_str()) + "\"";
+    j += ",\"sha256\":\"" + jsonEscape(normalizedDigest.c_str()) + "\"";
     bool isNewer = isVersionNewer(version, String(FIRMWARE_VERSION));
     bool trustedAsset = downloadUrl.length() > 0 && isTrustedFirmwareUrl(downloadUrl);
-    j += ",\"update\":" + String(isNewer && trustedAsset ? "true" : "false");
+    j += ",\"update\":" + String(isNewer && trustedAsset && verifiedDigest ? "true" : "false");
     j += ",\"beta\":" + String(updateBetaChannel ? "true" : "false");
     j += "}";
     server.send(200, "application/json", j);
@@ -6524,6 +6679,7 @@ static void handleUpdateInstall()
     }
 
     String url = server.arg("url");
+    String releaseDigest = server.arg("sha256");
     if (url.length() == 0)
     {
         server.send(400, "application/json", "{\"ok\":false,\"error\":\"No URL provided\"}");
@@ -6532,6 +6688,12 @@ static void handleUpdateInstall()
     if (!isTrustedFirmwareUrl(url))
     {
         server.send(400, "application/json", "{\"ok\":false,\"error\":\"Untrusted firmware URL\"}");
+        return;
+    }
+    String normalizedDigest;
+    if (!normalizeSha256Digest(releaseDigest, normalizedDigest))
+    {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing or invalid release SHA-256 digest\"}");
         return;
     }
 
@@ -6558,46 +6720,26 @@ static void handleUpdateInstall()
     }
 
     int contentLength = http.getSize();
-    dashLog(contentLength > 0 ? "[OTA] Downloading " + String(contentLength) + " bytes..."
-                              : "[OTA] Downloading chunked firmware...");
+    if (contentLength <= 0)
+    {
+        http.end();
+        server.send(502, "application/json", "{\"ok\":false,\"error\":\"Firmware response has no Content-Length\"}");
+        return;
+    }
+    dashLog("[OTA] Downloading and verifying " + String(contentLength) + " bytes...");
 
     dashQuiesceTransmitForOta("web_install");
     DashMaintenanceCleanupGuard cleanup;
-    if (!Update.begin(contentLength > 0 ? static_cast<size_t>(contentLength) : UPDATE_SIZE_UNKNOWN))
-    {
-        dashResumeTransmitAfterOtaFailure();
-        dashLog("[OTA] Update.begin failed: " + String(Update.errorString()));
-        http.end();
-        server.send(500, "application/json", "{\"ok\":false,\"error\":\"OTA initialization failed\"}");
-        return;
-    }
-
     WiFiClient *stream = http.getStreamPtr();
-    size_t written = Update.writeStream(*stream);
+    String installError;
+    const bool installed = dashInstallVerifiedFirmware(
+        *stream, static_cast<size_t>(contentLength), normalizedDigest, installError);
     http.end();
-
-    if (written == 0 || (contentLength > 0 && written != static_cast<size_t>(contentLength)))
+    if (!installed)
     {
-        dashLog("[OTA] Written " + String(written) + " of " + String(contentLength) + " bytes: " + String(Update.errorString()));
-        Update.abort();
-        dashResumeTransmitAfterOtaFailure();
-        server.send(500, "application/json", "{\"ok\":false,\"error\":\"Incomplete firmware download\"}");
-        return;
-    }
-
-    if (!Update.end(true))
-    {
-        dashResumeTransmitAfterOtaFailure();
-        dashLog("[OTA] Update finalize failed: " + String(Update.errorString()));
-        server.send(500, "application/json", "{\"ok\":false,\"error\":\"Firmware validation failed\"}");
-        return;
-    }
-
-    if (!Update.isFinished())
-    {
-        dashResumeTransmitAfterOtaFailure();
-        dashLog("[OTA] Update not finished");
-        server.send(500, "application/json", "{\"ok\":false,\"error\":\"Firmware update did not finish\"}");
+        dashLog("[OTA] Verified install failed: " + installError);
+        server.send(500, "application/json",
+                    "{\"ok\":false,\"error\":\"" + jsonEscape(installError.c_str()) + "\"}");
         return;
     }
 
@@ -6620,6 +6762,13 @@ static void performAutoUpdate()
     }
     if (!dashStaConnectedSnapshot())
         return;
+
+    String safetyReason;
+    if (!dashAutomaticOtaAllowed(safetyReason))
+    {
+        dashLog("[AUTO-OTA] Safety precondition failed: " + safetyReason);
+        return;
+    }
 
     dashLog("[AUTO-OTA] Checking for updates...");
 
@@ -6687,12 +6836,14 @@ static void performAutoUpdate()
 
     const char *artifact = getFirmwareArtifact();
     String downloadUrl = "";
+    String releaseDigest = "";
     for (JsonObject asset : release["assets"].as<JsonArray>())
     {
         String name = asset["name"] | "";
         if (name == artifact)
         {
             downloadUrl = String(asset["browser_download_url"] | "");
+            releaseDigest = String(asset["digest"] | "");
             break;
         }
     }
@@ -6704,6 +6855,20 @@ static void performAutoUpdate()
     if (!isTrustedFirmwareUrl(downloadUrl))
     {
         dashLog("[AUTO-OTA] Release asset URL rejected");
+        return;
+    }
+    String normalizedDigest;
+    if (!normalizeSha256Digest(releaseDigest, normalizedDigest))
+    {
+        dashLog("[AUTO-OTA] Release asset has no valid SHA-256 digest");
+        return;
+    }
+
+    // Re-check immediately before downloading so a gear/AP transition cannot
+    // turn a safe update check into an unsafe installation.
+    if (!dashAutomaticOtaAllowed(safetyReason))
+    {
+        dashLog("[AUTO-OTA] Safety precondition changed: " + safetyReason);
         return;
     }
 
@@ -6721,29 +6886,28 @@ static void performAutoUpdate()
         return;
     }
     int len = http2.getSize();
-    dashQuiesceTransmitForOta("auto_update");
-    DashMaintenanceCleanupGuard cleanup;
-    if (!Update.begin(len > 0 ? static_cast<size_t>(len) : UPDATE_SIZE_UNKNOWN))
+    if (len <= 0)
     {
-        dashResumeTransmitAfterOtaFailure();
-        dashLog("[AUTO-OTA] Update.begin failed: " + String(Update.errorString()));
+        dashLog("[AUTO-OTA] Firmware response has no Content-Length");
         http2.end();
         return;
     }
-    WiFiClient *stream = http2.getStreamPtr();
-    size_t written = Update.writeStream(*stream);
-    http2.end();
-    if (written == 0 || (len > 0 && written != static_cast<size_t>(len)))
+    if (!dashAutomaticOtaAllowed(safetyReason))
     {
-        dashLog("[AUTO-OTA] Written " + String(written) + "/" + String(len) + " bytes: " + String(Update.errorString()));
-        Update.abort();
-        dashResumeTransmitAfterOtaFailure();
+        dashLog("[AUTO-OTA] Safety precondition changed before flash: " + safetyReason);
+        http2.end();
         return;
     }
-    if (!Update.end(true))
+    dashQuiesceTransmitForOta("auto_update");
+    DashMaintenanceCleanupGuard cleanup;
+    WiFiClient *stream = http2.getStreamPtr();
+    String installError;
+    const bool installed = dashInstallVerifiedFirmware(
+        *stream, static_cast<size_t>(len), normalizedDigest, installError);
+    http2.end();
+    if (!installed)
     {
-        dashResumeTransmitAfterOtaFailure();
-        dashLog("[AUTO-OTA] Finalize failed: " + String(Update.errorString()));
+        dashLog("[AUTO-OTA] Verified install failed: " + installError);
         return;
     }
     dashLog("[AUTO-OTA] Update successful! Rebooting...");

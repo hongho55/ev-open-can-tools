@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-09-24
+
 ### Added
 
+- Published the first T2CAN Sentinel release channel for the LILYGO T-2CAN target, with opt-in GitHub release checks and automatic OTA.
+- Added release-asset SHA-256 verification before any downloaded firmware can become bootable.
+- Added automatic OTA safety preconditions: fresh Park gear, fresh zero speed, inactive autonomy, and no vehicle OTA in progress.
 - Added the read-only BLE `snapshot` command using the versioned `t2can-maintenance-snapshot-v1` schema. It combines firmware identity, runtime counters, CAN driver health, receive-side telemetry, and current configuration without enabling CAN transmission or changing state.
 - Added `scripts/collect_vehicle_snapshot.py` for bounded Mac-side collection from private ESP32 dashboard endpoints. It writes an atomic mode-0600 JSON artifact, rejects public hosts by default, and redacts local network identity from the optional support report.
 - Added `scripts/collect_vehicle_incidents.py`, a one-shot read-only incident sync client that verifies event metadata and content before private archive commit and `/event_ack`.
@@ -16,9 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added the read-only UDP `t2can-discovery-v1` response on port `36991` so a local S26 worker can discover EVCANTool without a fixed DHCP address. The listener is non-blocking, packet-bounded, and advertises no control or credential data.
 - Added the initial `android-gateway` S26 application slice: UDP discovery, authenticated ESP32 event download, `.part`/size/SHA-256 verification, durable SQLite queue leases, HTTPS Mac upload response validation, and ACK only after the Mac commit result is persisted. Physical S26 validation and Tailscale Serve deployment remain separate gates.
 
+### Changed
+
+- Rebranded the shared firmware and dashboard as T2CAN Sentinel while retaining `t2can-roaming` and EV Open CAN Tools attribution as project lineage.
+- Hardened HW4 decoding, CAN provenance, global physical-TX safety gates, Autopark/vehicle-OTA inhibition, and common CAN shutdown before restart.
+- Reduced only non-safety recorder and plugin capacities on classic ESP32 so the Wi-Fi/BLE dashboard fits internal DRAM without weakening safety state.
+
 ### Safety
 
-- The collection path is pull-only and read-only. It does not implement phone-to-Mac Internet upload, OTA, or automatic CAN rule generation; observed frames remain evidence for manual review.
+- Automatic OTA remains disabled by default and only trusts board-specific assets from `hongho55/ev-open-can-tools` over certificate-validated HTTPS.
+- The collection path remains pull-only and read-only. It does not implement phone-to-Mac Internet upload or automatic CAN rule generation; observed frames remain evidence for manual review.
 
 ## [4.0.0-beta.2] - 2026-08-16
 

@@ -93,6 +93,7 @@ struct TelemetrySnapshot
     // remains latched if frames disappear; six explicit non-install samples
     // are required to clear the physical-TX inhibit.
     bool vehicleOtaSeen = false;
+    bool vehicleOtaFresh = false;
     bool vehicleOtaInProgress = false;
     uint8_t vehicleOtaByte6 = 0;
     uint32_t vehicleOtaMs = 0;
@@ -175,6 +176,11 @@ public:
         out.torqueSeen = fresh(snapshot_.torqueSeen, snapshot_.torqueMs, nowMs);
         out.diStateSeen = fresh(snapshot_.diStateSeen, snapshot_.diStateMs, nowMs);
         out.warningSeen = fresh(snapshot_.warningSeen, snapshot_.warningMs, nowMs);
+        // Keep vehicleOtaSeen and vehicleOtaInProgress latched for the global
+        // physical-TX gate, but expose freshness separately so automatic OTA
+        // cannot proceed from an unknown or stale GTW_carState sample.
+        out.vehicleOtaFresh = fresh(snapshot_.vehicleOtaSeen,
+                                    snapshot_.vehicleOtaMs, nowMs);
         out.visionLimitSeen = snapshot_.visionLimitSeen && out.dasSeen;
         out.tierSeen = fresh(snapshot_.tierSeen, snapshot_.tierMs, nowMs);
         return out;

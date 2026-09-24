@@ -2,7 +2,7 @@
 
 The project publishes a standalone guided onboarding journey at [GitHub Pages](../onboarding/).
 
-It is designed for people who are new to T2CAN Sentinel and do not yet know which documentation, board, vehicle mode, harness, or first-start sequence applies to them. Sentinel currently has no verified release image, so the page directs users to build this source branch and explicitly warns against flashing upstream release artifacts.
+It is designed for people who are new to T2CAN Sentinel and do not yet know which documentation, board, vehicle mode, harness, or first-start sequence applies to them. The LILYGO T-2CAN target has a board-specific Sentinel release; other targets still use the documented source-build path. The page explicitly warns against flashing upstream release artifacts as Sentinel firmware.
 
 ## What the journey covers
 

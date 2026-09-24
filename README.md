@@ -20,7 +20,7 @@ New to the project? Follow this order:
 
 1. Start the [guided newcomer onboarding](onboarding/) to choose a goal, vehicle mode, board, installation approach, and matching source-build path.
 2. Read [CAN safety and testing](docs/nag-killer.md).
-3. Follow [Build from source](docs/building.md) for the selected board. No verified Sentinel release image is published yet.
+3. For LILYGO T-2CAN, use the board-specific [Sentinel release](https://github.com/hongho55/ev-open-can-tools/releases); for every other board, follow [Build from source](docs/building.md). Never install an upstream EV Open CAN artifact as Sentinel firmware.
 4. Keep injection stopped while learning the [Dashboard](docs/dashboard.md).
 5. Read the [Plugin system](docs/plugins.md) before installing a transmit rule.
 
