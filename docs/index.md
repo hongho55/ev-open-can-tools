@@ -1,10 +1,14 @@
-# ev-open-can-tools documentation
+# T2CAN Sentinel documentation
 
-[Project home](../) · [Start onboarding](../onboarding/) · [Build and flash](building.md) · [Dashboard](dashboard.md) · [Onboarding guide](onboarding.md) · [Plugins](plugins.md) · [CAN safety](nag-killer.md) · [T-2CAN lineage](t2can-project-lineage.md) · [Active FSD roadmap](t2can-active-fsd-roadmap.md) · [Runtime optimization](esp32-optimization.md) · [Field maintenance](vehicle-esp32-field-maintenance.md) · [Automatic sync](vehicle-automatic-sync.md) · [S26 Android gateway](../android-gateway/) · [Release notes](../CHANGELOG.md)
+[Project home](../) · [Build from source](building.md) · [Dashboard](dashboard.md) · [Plugins](plugins.md) · [CAN safety](nag-killer.md) · [T-2CAN lineage](t2can-project-lineage.md) · [Active FSD roadmap](t2can-active-fsd-roadmap.md) · [Runtime optimization](esp32-optimization.md) · [Field maintenance](vehicle-esp32-field-maintenance.md) · [Automatic sync](vehicle-automatic-sync.md) · [S26 Android gateway](../android-gateway/) · [Release notes](../CHANGELOG.md)
 
 ## Start here
 
-ev-open-can-tools is experimental firmware for selected Tesla CAN experiments. A small board listens to CAN frames, shows their state, and, when explicitly enabled, can send carefully defined changes back to a bus.
+T2CAN Sentinel is safety-gated experimental firmware focused on the LilyGo
+T-2CAN and Model Y Juniper HW4 integration. A small board listens to CAN frames,
+shows their state, and, when explicitly enabled, can send carefully defined
+changes back to a bus. The broader board and plugin architecture comes from
+`ev-open-can-tools`; see the project-lineage document for the exact boundary.
 
 CAN is the vehicle's internal message network. A frame is a small message with an ID, a length, and data bytes. A wrong frame can affect steering, driver assistance, braking, or gateway behavior. This project is not plug-and-play and is not a substitute for a qualified vehicle technician.
 

@@ -435,6 +435,8 @@ static Shared<bool> updateBetaChannel{false};
 static Shared<bool> autoUpdateEnabled{false};
 static Shared<bool> autoUpdateDone{false};            // one-shot per boot
 static Shared<unsigned long> autoUpdateEligibleAt{0}; // millis() at which auto-check may fire
+// Flip only when this repository has published and verified Sentinel artifacts.
+static constexpr bool kSentinelReleaseChannelPublished = false;
 static unsigned long staConnectStartedAt = 0;
 static unsigned long staRetryAt = 0;
 static constexpr unsigned long kDashStaBootDelayMs = 5000;
@@ -1797,6 +1799,8 @@ static void dashLoadPrefs()
 
     updateBetaChannel = prefs.getBool("update_beta", false);
     autoUpdateEnabled = prefs.getBool("auto_upd", false);
+    if (!kSentinelReleaseChannelPublished)
+        autoUpdateEnabled = false;
     prefs.end();
 
     if (migratedHw)
@@ -3762,13 +3766,13 @@ static void handleSupport()
 
     char response[6144];
     BoundedTextWriter report(response, sizeof(response));
-    report.append("ev-open-can-tools support report\n");
+    report.append("T2CAN Sentinel support report\n");
     report.append("Report schema: 2\n");
     report.appendf("Overall: %s\n", overall);
     report.appendf("Captured uptime: %lu ms\n\n", static_cast<unsigned long>(now));
 
     report.append("[Firmware]\n");
-    report.appendf("Name: ev-open-can-tools\nVersion: %s\n", FIRMWARE_VERSION);
+    report.appendf("Name: T2CAN Sentinel\nVersion: %s\n", FIRMWARE_VERSION);
     report.appendf("Build date: %s %s\n", __DATE__, __TIME__);
 #if defined(CONFIG_COMPILER_OPTIMIZATION_DEBUG)
     report.append("Build type: debug\n");
@@ -5748,7 +5752,7 @@ static void handleSettingsExport()
     j += ",\"autoUpdate\":" + String(autoUpdateEnabled ? "true" : "false");
     j += "}";
 
-    server.sendHeader("Content-Disposition", "attachment; filename=\"evtools-backup.json\"");
+    server.sendHeader("Content-Disposition", "attachment; filename=\"t2can-sentinel-backup.json\"");
     server.send(200, "application/json", j);
 }
 
@@ -6257,7 +6261,9 @@ static void handleApStatus()
 #define FIRMWARE_VERSION "unknown"
 #endif
 
-static const char *GITHUB_REPO = "ev-open-can-tools/ev-open-can-tools";
+// Keep Sentinel updates on this fork's release channel. The upstream project is
+// an implementation source, not a compatible firmware update authority.
+static const char *GITHUB_REPO = "hongho55/ev-open-can-tools";
 
 // Map driver type to release artifact filename
 static const char *getFirmwareArtifact()
@@ -6272,7 +6278,8 @@ static const char *getFirmwareArtifact()
 static bool isTrustedFirmwareUrl(const String &url)
 {
     String suffix = "/" + String(getFirmwareArtifact());
-    return url.startsWith("https://github.com/ev-open-can-tools/ev-open-can-tools/releases/download/") &&
+    String trustedPrefix = "https://github.com/" + String(GITHUB_REPO) + "/releases/download/";
+    return url.startsWith(trustedPrefix.c_str()) &&
            url.endsWith(suffix.c_str()) && url.indexOf('?') < 0 && url.indexOf('#') < 0;
 }
 
@@ -6395,6 +6402,11 @@ static bool isVersionNewer(const String &candidate, const String &current)
 
 static void handleUpdateCheck()
 {
+    if (!kSentinelReleaseChannelPublished)
+    {
+        server.send(503, "application/json", "{\"ok\":false,\"error\":\"Sentinel release channel is not published; use a verified manual firmware upload\"}");
+        return;
+    }
     if (!dashStaConnectedSnapshot())
     {
         server.send(400, "application/json", "{\"ok\":false,\"error\":\"WiFi not connected\"}");
@@ -6500,6 +6512,11 @@ static void handleUpdateInstall()
         server.requestAuthentication();
         return;
     }
+    if (!kSentinelReleaseChannelPublished)
+    {
+        server.send(503, "application/json", "{\"ok\":false,\"error\":\"Sentinel release channel is not published\"}");
+        return;
+    }
     if (!dashStaConnectedSnapshot())
     {
         server.send(400, "application/json", "{\"ok\":false,\"error\":\"WiFi not connected\"}");
@@ -6596,6 +6613,11 @@ static void handleUpdateInstall()
 // Blocking; on success calls ESP.restart() and never returns.
 static void performAutoUpdate()
 {
+    if (!kSentinelReleaseChannelPublished)
+    {
+        dashLog("[AUTO-OTA] Sentinel release channel is not published; skipping");
+        return;
+    }
     if (!dashStaConnectedSnapshot())
         return;
 
@@ -6740,6 +6762,12 @@ static void handleAutoUpdate()
         if (!dashParseBool(server.arg("enabled"), requested))
         {
             server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid auto-update value\"}");
+            return;
+        }
+        if (requested && !kSentinelReleaseChannelPublished)
+        {
+            autoUpdateEnabled = false;
+            server.send(409, "application/json", "{\"ok\":false,\"error\":\"Sentinel release channel is not published\"}");
             return;
         }
         bool previous = autoUpdateEnabled;
@@ -7077,11 +7105,11 @@ static void mcpDashboardSetup(CarManagerBase *handler, CanDriver *driver)
     if (dashBleMode)
     {
         dashStartRecorderMaintenance();
-        dashLog("[BOOT] ev-open-can-tools ready (BLE mode)");
+        dashLog("[BOOT] T2CAN Sentinel ready (BLE mode)");
         return;
     }
 
-    ArduinoOTA.setHostname("ev-open-can-tools");
+    ArduinoOTA.setHostname("t2can-sentinel");
     ArduinoOTA.setPassword(DASH_OTA_PASS);
     ArduinoOTA.onStart([]()
                        {

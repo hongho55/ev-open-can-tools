@@ -14,7 +14,8 @@ Repository names in this roadmap follow
 original T-2CAN baseline, Flipper is a protocol/safety reference,
 `ev-open-can-tools` is the public shared-firmware upstream, and the local
 `t2can-bobby` worktree is only the historical `feat/t2can-dual` experiment.
-The current implementation target is `private/shared-fw-minimal`.
+The current implementation target is `T2CAN Sentinel` on
+`private/shared-fw-minimal`.
 
 ## Bottom line
 

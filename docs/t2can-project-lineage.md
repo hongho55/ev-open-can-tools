@@ -8,7 +8,7 @@ This repository contains the current shared-firmware work. The similarly named r
 - [`hypery11/flipper-tesla-fsd`](https://github.com/hypery11/flipper-tesla-fsd) — **current Flipper upstream/reference**. Review new protocol and safety fixes here, but port only source-verified behavior that fits the T-2CAN architecture. Do not merge Flipper hardware/UI code wholesale.
 - [`ev-open-can-tools/ev-open-can-tools`](https://github.com/ev-open-can-tools/ev-open-can-tools) — **public ESP32 firmware upstream** from which this repository is forked. It supplies the broader board, dashboard, plugin, and driver architecture.
 - `feat/t2can-dual` (local worktree historically named `t2can-bobby`) — **completed experimental integration branch**. “Bobby” is only a local workspace nickname; it is not the original T-2CAN baseline and must not be cited as upstream.
-- `private/shared-fw-minimal` — **current integration branch**. This is where selected T-2CAN and Flipper-derived behavior is adapted to the shared firmware's common telemetry, TX-policy, dual-driver, OTA, and dashboard paths.
+- `private/shared-fw-minimal` — **current integration branch, product name `T2CAN Sentinel`**. This is where selected T-2CAN and Flipper-derived behavior is adapted to the shared firmware's common telemetry, TX-policy, dual-driver, OTA, and dashboard paths.
 
 ## Authority order
 

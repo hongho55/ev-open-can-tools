@@ -1665,7 +1665,7 @@ bool WebServer::authenticate(const char *user, const char *pass)
 
 void WebServer::requestAuthentication()
 {
-    sendHeader("WWW-Authenticate", "Basic realm=\"ev-open-can-tools\"");
+    sendHeader("WWW-Authenticate", "Basic realm=\"T2CAN Sentinel\"");
     send(401, "text/plain", "Authentication required");
 }
 

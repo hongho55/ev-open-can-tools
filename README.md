@@ -1,8 +1,14 @@
-# ev-open-can-tools
+# T2CAN Sentinel
 
-[Start onboarding](https://ev-open-can-tools.github.io/ev-open-can-tools/onboarding/) · [Documentation](https://ev-open-can-tools.github.io/ev-open-can-tools/docs/) · [Plugin repository](https://github.com/ev-open-can-tools/ev-open-can-tools-plugins) · [Discord](https://discord.gg/ZTQKAUTd2F)
+[Documentation](docs/) · [Project lineage](docs/t2can-project-lineage.md) · [Build from source](docs/building.md) · [CAN safety](docs/nag-killer.md)
 
-Experimental open-source firmware for selected Tesla CAN experiments using ESP32 and other CAN-capable boards.
+Safety-gated experimental firmware for LilyGo T-2CAN, currently focused on
+Model Y Juniper HW4. It combines the broader
+[`ev-open-can-tools`](https://github.com/ev-open-can-tools/ev-open-can-tools)
+firmware architecture with source-verified behavior from
+[`t2can-roaming`](https://github.com/anoblekman/t2can-roaming). See the
+[project lineage](docs/t2can-project-lineage.md) before comparing branches or
+vehicle reports.
 
 ## Read this first
 
@@ -12,11 +18,11 @@ Use an isolated bench harness or listen-only tool first. Do not begin on a publi
 
 New to the project? Follow this order:
 
-1. Start the [guided newcomer onboarding](https://ev-open-can-tools.github.io/ev-open-can-tools/onboarding/) to choose a goal, vehicle mode, board, installation approach, and matching build path.
-2. Read [CAN safety and testing](https://ev-open-can-tools.github.io/ev-open-can-tools/docs/nag-killer.html).
-3. Follow [Build and flash](https://ev-open-can-tools.github.io/ev-open-can-tools/docs/building.html) for the selected board.
-4. Keep injection stopped while learning the [Dashboard](https://ev-open-can-tools.github.io/ev-open-can-tools/docs/dashboard.html).
-5. Read the [Plugin system](https://ev-open-can-tools.github.io/ev-open-can-tools/docs/plugins.html) before installing a transmit rule.
+1. Start the [guided newcomer onboarding](onboarding/) to choose a goal, vehicle mode, board, installation approach, and matching source-build path.
+2. Read [CAN safety and testing](docs/nag-killer.md).
+3. Follow [Build from source](docs/building.md) for the selected board. No verified Sentinel release image is published yet.
+4. Keep injection stopped while learning the [Dashboard](docs/dashboard.md).
+5. Read the [Plugin system](docs/plugins.md) before installing a transmit rule.
 
 ## What it does
 
@@ -60,18 +66,18 @@ pio run -e esp32_ext_mcp2515 -t upload
 
 Replace the environment with the exact board. Configure the local profile before building. Never commit or share `platformio_profile.h`; it can contain credentials and keys.
 
-After flashing an ESP32 dashboard board, connect to its hotspot and open `http://192.168.4.1/`. Read the [first-boot steps](https://ev-open-can-tools.github.io/ev-open-can-tools/docs/building.html#first-boot).
+After flashing an ESP32 dashboard board, connect to its hotspot and open `http://192.168.4.1/`. Read the [first-boot steps](docs/building.md#first-boot).
 
 ## Documentation
 
-- [Guided newcomer onboarding](https://ev-open-can-tools.github.io/ev-open-can-tools/onboarding/)
-- [Documentation index](https://ev-open-can-tools.github.io/ev-open-can-tools/docs/)
-- [Build and flash](https://ev-open-can-tools.github.io/ev-open-can-tools/docs/building.html)
-- [Dashboard](https://ev-open-can-tools.github.io/ev-open-can-tools/docs/dashboard.html)
-- [Plugin system](https://ev-open-can-tools.github.io/ev-open-can-tools/docs/plugins.html)
-- [CAN safety and hands-on-wheel experiments](https://ev-open-can-tools.github.io/ev-open-can-tools/docs/nag-killer.html)
+- [Guided newcomer onboarding](onboarding/)
+- [Documentation index](docs/)
+- [Build from source](docs/building.md)
+- [Dashboard](docs/dashboard.md)
+- [Plugin system](docs/plugins.md)
+- [CAN safety and hands-on-wheel experiments](docs/nag-killer.md)
 - [T-2CAN Active FSD integration roadmap](docs/t2can-active-fsd-roadmap.md)
-- [ESP32 runtime optimization](https://ev-open-can-tools.github.io/ev-open-can-tools/docs/esp32-optimization.html)
+- [ESP32 runtime optimization](docs/esp32-optimization.md)
 - [Release notes](CHANGELOG.md)
 
 ## Contributing

@@ -1,14 +1,11 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Plugin repo
+  - name: Upstream plugin catalog
     url: https://github.com/ev-open-can-tools/ev-open-can-tools-plugins
-    about: Here you can find the repo for plugins to active for esp32 builds
-  - name: 📚 Read the documentation
-    url: https://ev-open-can-tools.github.io/ev-open-can-tools/docs/
-    about: Please read the documentation before opening an issue.
-  - name: 📝 Check the release notes
-    url: https://github.com/ev-open-can-tools/ev-open-can-tools/releases
-    about: Check the latest release notes first. Your issue may already be fixed in a newer version.
-  - name: 💬 Join our Discord
-    url: https://discord.gg/ZTQKAUTd2F
-    about: Use Discord for questions, help, and general community discussion.
+    about: Upstream plugin source for review; compatibility with Sentinel is not implied.
+  - name: 📚 Read the Sentinel documentation
+    url: https://github.com/hongho55/ev-open-can-tools/tree/private/shared-fw-minimal/docs
+    about: Read the Sentinel branch documentation before opening an issue.
+  - name: 🧭 Check the pre-release roadmap
+    url: https://github.com/hongho55/ev-open-can-tools/blob/private/shared-fw-minimal/docs/t2can-active-fsd-roadmap.md
+    about: Sentinel has no verified release image yet; check current scope and validation status here.
