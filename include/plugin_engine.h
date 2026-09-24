@@ -16,7 +16,9 @@ using String = std::string;
 #include "can_helpers.h"
 #include "drivers/can_driver.h"
 
+#ifndef PLUGIN_MAX
 #define PLUGIN_MAX 8
+#endif
 #define PLUGIN_RULES_MAX 16
 #define PLUGIN_OPS_MAX 16
 #define PLUGIN_NAME_MAX 64

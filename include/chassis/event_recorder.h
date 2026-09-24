@@ -11,6 +11,22 @@
 
 namespace Chassis
 {
+#ifndef EVENT_RECORDER_INTERNAL_RAW_CAPACITY
+#define EVENT_RECORDER_INTERNAL_RAW_CAPACITY 2048
+#endif
+#ifndef EVENT_RECORDER_INTERNAL_STATE_CAPACITY
+#define EVENT_RECORDER_INTERNAL_STATE_CAPACITY 3072
+#endif
+#ifndef EVENT_RECORDER_INTERNAL_POST_RAW_CAPACITY
+#define EVENT_RECORDER_INTERNAL_POST_RAW_CAPACITY 1536
+#endif
+#ifndef EVENT_RECORDER_INTERNAL_POST_STATE_CAPACITY
+#define EVENT_RECORDER_INTERNAL_POST_STATE_CAPACITY 512
+#endif
+#ifndef EVENT_RECORDER_INTERNAL_STATE_BUDGET_PER_BUCKET
+#define EVENT_RECORDER_INTERNAL_STATE_BUDGET_PER_BUCKET 8
+#endif
+
 // Observational, bounded flight recorder. CAN-path methods never allocate and
 // never make a control decision. Filesystem serialization belongs to the web
 // maintenance context (see mcp2515_dashboard.h).
@@ -20,12 +36,12 @@ public:
     // The T-2CAN N16R8 build uses the larger PSRAM rings when the boot probe
     // succeeds. The internal-RAM rings are deliberately useful on their own so
     // a board with absent or failed PSRAM still records an incident.
-    static constexpr size_t InternalRawCapacity = 2048;
-    static constexpr size_t InternalStateCapacity = 3072;
+    static constexpr size_t InternalRawCapacity = EVENT_RECORDER_INTERNAL_RAW_CAPACITY;
+    static constexpr size_t InternalStateCapacity = EVENT_RECORDER_INTERNAL_STATE_CAPACITY;
     static constexpr size_t PsramRawCapacity = 8192;
     static constexpr size_t PsramStateCapacity = 6144;
-    static constexpr size_t InternalPostRawCapacity = 1536;
-    static constexpr size_t InternalPostStateCapacity = 512;
+    static constexpr size_t InternalPostRawCapacity = EVENT_RECORDER_INTERNAL_POST_RAW_CAPACITY;
+    static constexpr size_t InternalPostStateCapacity = EVENT_RECORDER_INTERNAL_POST_STATE_CAPACITY;
     static constexpr size_t PsramPostRawCapacity = 4096;
     static constexpr size_t PsramPostStateCapacity = 1024;
     static constexpr size_t Capacity = InternalRawCapacity; // compatibility
@@ -33,11 +49,16 @@ public:
     static constexpr uint32_t PostWindowMs = 10000;
     static constexpr uint32_t StateTargetWindowMs = 5 * 60 * 1000;
     static constexpr uint32_t StateHistoryBucketMs = 1000;
-    static constexpr size_t InternalStateHistoryBudgetPerBucket = 8;
+    static constexpr size_t InternalStateHistoryBudgetPerBucket =
+        EVENT_RECORDER_INTERNAL_STATE_BUDGET_PER_BUCKET;
     static constexpr size_t PsramStateHistoryBudgetPerBucket = 16;
     static constexpr uint32_t TorqueHistoryIntervalMs = 1000;
     static constexpr uint32_t TorquePostIntervalMs = 100;
 
+    static_assert(InternalPostRawCapacity <= InternalRawCapacity,
+                  "internal post-trigger raw partition exceeds capacity");
+    static_assert(InternalPostStateCapacity <= InternalStateCapacity,
+                  "internal post-trigger state partition exceeds capacity");
     static_assert(InternalStateCapacity - InternalPostStateCapacity >=
                       (StateTargetWindowMs / StateHistoryBucketMs + 1) *
                           InternalStateHistoryBudgetPerBucket,

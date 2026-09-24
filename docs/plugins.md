@@ -109,7 +109,7 @@ This is restricted to the documented gateway ID/mux combination and emits a cach
 
 | Resource | Limit |
 | --- | ---: |
-| Installed plugins | 8 |
+| Installed plugins | 8 by default; 4 on the RAM-constrained classic `esp32_twai` profile |
 | Rules per plugin | 16 |
 | Operations per rule | 16 |
 | Filter IDs per plugin | 32 |

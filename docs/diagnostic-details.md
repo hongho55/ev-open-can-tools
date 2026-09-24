@@ -31,8 +31,10 @@ persisted as generation-specific JSONL in SPIFFS.
 
 Separate bounded raw RX/TX and state/decision rings preserve pre-trigger and
 post-trigger partitions. The N16R8 target uses PSRAM when its boot probe passes
-and otherwise uses a larger internal-RAM fallback. Capacity, measured coverage,
-and drop counters are reported by the status endpoints and are authoritative.
+and otherwise uses the standard internal-RAM fallback. RAM-constrained classic
+ESP32 profiles may select smaller compile-time fallback rings while preserving
+the five-minute state window. Capacity, measured coverage, and drop counters are
+reported by the status endpoints and are authoritative.
 See `docs/vehicle-flight-recorder.md` for the current schema and preservation
 details.
 

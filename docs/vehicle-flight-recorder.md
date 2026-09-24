@@ -31,12 +31,16 @@ anything and never participates in a vehicle-control decision.
   not only the manual preference. A rearmed capture then uses live settings.
 - Diagnostics expose the actual raw/state capacity, counts, monotonic coverage,
   state-only coverage, and raw/state drop counters. Verified PSRAM selects the
-  larger rings (8192 raw and 6144 state entries). A failed or absent PSRAM probe
-  selects the bounded, still-useful internal fallback (2048 raw and 3072 state
-  entries).
+  larger rings (8192 raw and 6144 state entries). The standard internal fallback
+  is 2048 raw and 3072 state entries. The classic no-PSRAM `esp32_twai` profile
+  uses a compact 512 raw / 640 state fallback so WiFi, BLE, and the dashboard fit
+  in linkable DRAM; its state-history budget is two records per second and still
+  protects the five-minute state window. Runtime diagnostics report the actual
+  capacities, so consumers must not assume one profile's values.
 - Pre-trigger state history is protected for five minutes. State writes are
-  bounded per one-second bucket (16 with PSRAM, 8 in the internal fallback),
-  and the recorder refuses to evict a state record younger than 300,000 ms.
+  bounded per one-second bucket (16 with PSRAM, 8 in the standard internal
+  fallback, and 2 in the compact classic-ESP32 fallback), and the recorder
+  refuses to evict a state record younger than 300,000 ms.
   Excess bursts increment `stateProtectedDrops`; this preserves the time window
   without allowing an abnormal producer to exhaust it silently. Diagnostics
   expose `stateCoverageMs`, `stateTargetMs`, and `stateTargetReady`.
