@@ -9,6 +9,13 @@
 > Out of scope for this document: connector pin maps, harness pin selection, and
 > public-road test procedures.
 
+Repository names in this roadmap follow
+[`t2can-project-lineage.md`](t2can-project-lineage.md): `t2can-roaming` is the
+original T-2CAN baseline, Flipper is a protocol/safety reference,
+`ev-open-can-tools` is the public shared-firmware upstream, and the local
+`t2can-bobby` worktree is only the historical `feat/t2can-dual` experiment.
+The current implementation target is `private/shared-fw-minimal`.
+
 ## Bottom line
 
 This project will retain CAN transmit features and add device OTA. It will not
@@ -38,13 +45,18 @@ not permission to transmit before those gates pass.
 
 ## Evidence baseline
 
-The following results were collected before writing this plan:
+The following results establish separate historical baselines; they must not be
+read as if `t2can-bobby` were the original source repository:
 
-- `t2can-bobby`: `python3 -m platformio test -e native` completed with
+- Original baseline `anoblekman/t2can-roaming`: host logic tests and the
+  `lilygo-t2can` build passed at audited `main` revision `0bbbee6`. This proves
+  the checked-out source builds; it is not target-vehicle validation.
+- Historical experiment `feat/t2can-dual` (local worktree name
+  `t2can-bobby`): `python3 -m platformio test -e native` completed with
   **196/196 native test cases passing**. Coverage includes dual-CAN routing,
   simulated loopback, recorder behavior, GVRET framing, HW3/HW4/Legacy
   handlers, injection gates, TWAI filters, and MCP2515 recovery.
-- `sqladm1n/flipper-tesla-fsd`: `make -C test check` completed with
+- Flipper reference fork `sqladm1n/flipper-tesla-fsd`: `make -C test check` completed with
   **236 passed, 0 failed** for its protocol core. These are that fork's host
   tests, not proof that its behavior is correct on this project's hardware or
   target vehicle.

@@ -60,6 +60,12 @@ public:
         canB_.setMonitorAll(enabled);
     }
 
+    void shutdown() override
+    {
+        canA_.shutdown();
+        canB_.shutdown();
+    }
+
     void clearPendingTransmit() override
     {
         canA_.clearPendingTransmit();

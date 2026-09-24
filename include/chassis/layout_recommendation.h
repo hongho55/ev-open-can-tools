@@ -122,8 +122,7 @@ inline Result recommend(const Evidence &evidence)
         result.confidence = Confidence::Low;
         result.alternatives[0] = DasLayout::LegacyHw3;
         result.alternatives[1] = DasLayout::StandardHw4;
-        result.alternatives[2] = DasLayout::HighlandHw4Byte0;
-        result.alternativeCount = 3;
+        result.alternativeCount = 2;
         return result;
     }
 
@@ -139,21 +138,10 @@ inline Result recommend(const Evidence &evidence)
     if (!hw4Observed)
         return result;
 
-    // 0x39B proves an HW4-family frame shape, but not whether AP state is in
-    // byte1 high nibble or Highland byte0. Profile evidence must break the tie.
-    if (evidence.declaredStandardHw4Profile == evidence.declaredHighlandProfile)
-    {
-        result.ambiguous = true;
-        result.confidence = Confidence::Low;
-        result.alternatives[0] = DasLayout::StandardHw4;
-        result.alternatives[1] = DasLayout::HighlandHw4Byte0;
-        result.alternativeCount = 2;
-        return result;
-    }
-
-    result.candidate = evidence.declaredHighlandProfile
-                           ? DasLayout::HighlandHw4Byte0
-                           : DasLayout::StandardHw4;
+    // 0x39B identifies the HW4 layout. Both historical profile labels now use
+    // the same authoritative byte0[3:0] AP-state decoder, so there is no
+    // byte-position ambiguity to ask the user to resolve.
+    result.candidate = DasLayout::StandardHw4;
     result.confidence = clean && evidence.hw4_39bValid >= 20
                             ? Confidence::High
                             : Confidence::Medium;

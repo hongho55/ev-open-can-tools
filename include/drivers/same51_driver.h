@@ -60,11 +60,21 @@ public:
 
     bool send(const CanFrame &frame) override
     {
+        if (!sendAllowed(frame))
+        {
+            if (onSendFrame)
+                onSendFrame(frame, false);
+            if (onSendAttempt)
+                onSendAttempt(frame, false, false);
+            return false;
+        }
         can_.beginPacket(frame.id);
         can_.write(frame.data, frame.dlc);
         can_.endPacket();
         if (onSendFrame)
             onSendFrame(frame, true);
+        if (onSendAttempt)
+            onSendAttempt(frame, true, true);
         return true;
     }
 

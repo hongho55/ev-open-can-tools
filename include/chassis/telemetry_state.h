@@ -4,6 +4,7 @@
 
 #include "../can_helpers.h"
 #include "signals.h"
+#include "vehicle_ota_state.h"
 
 namespace Chassis
 {
@@ -88,6 +89,14 @@ struct TelemetrySnapshot
     bool warningSeen = false;
     uint32_t partyLastMs = 0;
 
+    // GTW_carState (0x318) update detector. Once asserted it intentionally
+    // remains latched if frames disappear; six explicit non-install samples
+    // are required to clear the physical-TX inhibit.
+    bool vehicleOtaSeen = false;
+    bool vehicleOtaInProgress = false;
+    uint8_t vehicleOtaByte6 = 0;
+    uint32_t vehicleOtaMs = 0;
+
     float packVoltageV = 0, packCurrentA = 0, socPercent = 0;
     int16_t tempMinC = 0, tempMaxC = 0;
     uint32_t bmsHvMs = 0, bmsSocMs = 0, bmsThermalMs = 0;
@@ -119,6 +128,20 @@ public:
     {
         if (frame.id > 0x7FF || frame.dlc > 8 || frame.bus == CAN_BUS_ANY)
             return false;
+
+        if (frame.id == 0x318)
+        {
+            if (frame.dlc < 7 || frame.physicalBus != CAN_BUS_CAN_B ||
+                !chassisBus(frame.bus))
+                return false;
+            snapshot_.vehicleOtaInProgress = vehicleOta_.observe(frame.data[6]);
+            snapshot_.vehicleOtaSeen = true;
+            snapshot_.vehicleOtaByte6 = frame.data[6];
+            snapshot_.vehicleOtaMs = nowMs;
+            ++snapshot_.acceptedFrames;
+            snapshot_.lastObservedMs = nowMs;
+            return true;
+        }
 
         if (observeChassis(frame, nowMs)) return true;
         return observeParty(frame, nowMs);
@@ -157,7 +180,11 @@ public:
         return out;
     }
 
-    void reset() { snapshot_ = {}; }
+    void reset()
+    {
+        snapshot_ = {};
+        vehicleOta_.reset();
+    }
 
 private:
     static bool chassisBus(uint8_t bus)
@@ -413,5 +440,6 @@ private:
     DasLayout layout_;
     uint32_t timeoutMs_;
     TelemetrySnapshot snapshot_{};
+    VehicleOtaState vehicleOta_{};
 };
 } // namespace Chassis

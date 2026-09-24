@@ -296,6 +296,20 @@ public:
         return ok;
     }
 
+    void shutdown() override
+    {
+#ifdef ESP_PLATFORM
+        if (!mutex_)
+            return;
+        lock();
+        mcp_.abortPendingTransmissions();
+        if (mcp_.setConfigMode() != MCP2515::ERROR_OK)
+            ++errorCount_;
+        initialized_ = false;
+        unlock();
+#endif
+    }
+
     void clearPendingTransmit() override
     {
 #ifdef ESP_PLATFORM

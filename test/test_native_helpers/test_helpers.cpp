@@ -149,7 +149,7 @@ void test_isDASAutopilotActive_true_for_active_states()
     TEST_ASSERT_TRUE(isDASAutopilotActive(3));
     TEST_ASSERT_TRUE(isDASAutopilotActive(4));
     TEST_ASSERT_TRUE(isDASAutopilotActive(5));
-    TEST_ASSERT_FALSE(isDASAutopilotActive(6)); // Highland in-car Autopark
+    TEST_ASSERT_TRUE(isDASAutopilotActive(6)); // direct 0x286 DI gate blocks real Autopark
     TEST_ASSERT_FALSE(isDASAutopilotActive(7));
 }
 
@@ -166,11 +166,11 @@ void test_isDASAutopilotActive_false_for_abort_states()
     TEST_ASSERT_FALSE(isDASAutopilotActive(15));
 }
 
-void test_readHW4DASAutopilotStatus_extracts_byte1_high_nibble()
+void test_readHW4DASAutopilotStatus_extracts_byte0_low_nibble()
 {
     CanFrame f = {};
-    f.data[0] = 0xA2; // unrelated standard-HW4 byte 0
-    f.data[1] = 0x60;
+    f.data[0] = 0xA6;
+    f.data[1] = 0x20; // adjacent warning fields must not affect AP state
     TEST_ASSERT_EQUAL_UINT8(6, readHW4DASAutopilotStatus(f));
 }
 
@@ -392,7 +392,7 @@ int main()
     RUN_TEST(test_isDASAutopilotActive_true_for_active_states);
     RUN_TEST(test_isDASAutopilotActive_false_for_available_state);
     RUN_TEST(test_isDASAutopilotActive_false_for_abort_states);
-    RUN_TEST(test_readHW4DASAutopilotStatus_extracts_byte1_high_nibble);
+    RUN_TEST(test_readHW4DASAutopilotStatus_extracts_byte0_low_nibble);
     RUN_TEST(test_isESPDriverBrakeApplied_uses_enum_threshold);
     RUN_TEST(test_readDASAutopilotHandsOnState_extracts_byte5_middle_nibble);
     RUN_TEST(test_readSCCMSteeringAngle_decodes_current_dbc_layout);

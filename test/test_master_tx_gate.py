@@ -5,7 +5,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = (ROOT / "include/app.h").read_text(encoding="utf-8")
-DASHBOARD = (ROOT / "include/web/mcp2515_dashboard.h").read_text(encoding="utf-8")
+DASHBOARD = (ROOT / "include" / "web" / "mcp2515_dashboard.h").read_text()
+MCP2515_DRIVER = (ROOT / "include" / "drivers" / "mcp2515_driver.h").read_text()
+SAME51_DRIVER = (ROOT / "include" / "drivers" / "same51_driver.h").read_text()
 
 
 class MasterTxGateTests(unittest.TestCase):
@@ -29,6 +31,26 @@ class MasterTxGateTests(unittest.TestCase):
         )
         self.assertIn('prefs.putBool("can", canActive);', DASHBOARD)
         self.assertIn('canActive = prefs.getBool("can", kDashInjectionDefaultEnabled);', DASHBOARD)
+
+    def test_common_gate_observes_and_enforces_autopark_and_vehicle_ota(self):
+        self.assertIn("appTxSafetyState.observe(safetyFrame, appSafetyMillis());", APP)
+        self.assertIn("appTxSafetyState.advanceClock(appSafetyMillis());", APP)
+        self.assertIn("appTxSafetyState.decision(appSafetyMillis())", APP)
+        self.assertIn("GlobalTxSafetyDecision::VehicleOta", APP)
+        self.assertIn("GlobalTxSafetyDecision::AutoparkOrDiStale", APP)
+        self.assertIn('"vehicle_ota"', APP)
+        self.assertIn('"autopark_or_di_stale"', APP)
+
+    def test_single_bus_alias_never_promotes_known_can_a(self):
+        self.assertIn("if (observed.physicalBus == CAN_BUS_ANY)", APP)
+        self.assertIn(
+            "if (observed.physicalBus == CAN_BUS_CAN_B && observed.bus == CAN_BUS_ANY)",
+            APP,
+        )
+
+    def test_legacy_physical_drivers_also_honor_the_master_gate(self):
+        self.assertIn("if (!sendAllowed(frame))", MCP2515_DRIVER)
+        self.assertIn("if (!sendAllowed(frame))", SAME51_DRIVER)
 
     def test_dashboard_tx_context_fails_closed_on_autopark_state(self):
         self.assertIn(

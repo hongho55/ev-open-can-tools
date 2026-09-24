@@ -343,8 +343,8 @@ static unsigned long lastFrameMs = 0;
 static bool canOnline = false;
 
 static Shared<uint8_t> hwMode{DASH_DEFAULT_HW};
-// 0=Auto, 1=legacy 0x399 byte0, 2=standard HW4 0x39B byte1,
-// 3=explicit Highland 0x39B byte0. Never infer this from observed frames.
+// 0=Auto, 1=legacy 0x399 byte0, 2=HW4 0x39B byte0.
+// Persisted value 3 is migrated to 2 for compatibility with older builds.
 static Shared<uint8_t> dashDasLayoutOverride{0};
 static Shared<bool> canActive{kDashInjectionDefaultEnabled};
 // Dev/test mode (simulated CAN traffic) — see app.h appDevSim / appDevModeActive.
@@ -482,6 +482,7 @@ static void dashRestorePluginStates();
 static void dashClearLegacyOptionPrefs();
 static void dashSchedulePluginStateSave(unsigned long delayMs = 750);
 static void dashFlushPluginStatesIfDue();
+static void dashShutdownCanForRestart(const char *reason);
 
 static Shared<bool> pluginStatesDirty{false};
 static Shared<unsigned long> pluginStatesFlushAt{0};
@@ -836,7 +837,13 @@ static bool dashActivityTxAllowed()
         DashDataGuard guard;
         telemetry = dashTelemetry.snapshot(now);
     }
-    // This check is intentionally before the user-selectable AP gate bypass.
+    // OTA inhibit is a global physical-TX boundary, independent of the
+    // user-selectable AP gate bypass.
+    if (static_cast<bool>(appMaintenanceTxInhibit) || telemetry.vehicleOtaInProgress)
+    {
+        dashTrackApStableMs(false, now);
+        return false;
+    }
     // Unknown/stale DI_state and Autopark states 3/4/9 block every physical TX.
     if (!telemetry.diStateSeen || telemetry.autoparkActive)
     {
@@ -922,7 +929,6 @@ static TxControl::PolicyContext dashTxPolicyContextForBus(uint8_t physicalBus)
     context.masterEnabled = static_cast<bool>(canActive);
     context.startupFresh = appInjectionReady();
     context.vehicleFresh = context.startupFresh;
-    context.otaInhibit = static_cast<bool>(appMaintenanceTxInhibit);
     context.controlAuthorized = true; // Built-in feature, not a remote principal.
     context.controlConnected = true;
     context.parked = dashHandler && static_cast<bool>(dashHandler->Parked);
@@ -931,6 +937,8 @@ static TxControl::PolicyContext dashTxPolicyContextForBus(uint8_t physicalBus)
         DashDataGuard guard;
         telemetry = dashTelemetry.snapshot(context.nowMs);
     }
+    context.otaInhibit = static_cast<bool>(appMaintenanceTxInhibit) ||
+                         telemetry.vehicleOtaInProgress;
     context.stationary = telemetry.speedSeen && telemetry.speedKph >= -0.1f &&
                          telemetry.speedKph <= 0.1f;
     context.autoparkBlocked = !telemetry.diStateSeen || telemetry.autoparkActive;
@@ -1076,8 +1084,8 @@ static Chassis::DasLayout dashEffectiveDasLayout()
         return Chassis::DasLayout::LegacyHw3;
     case 2:
         return Chassis::DasLayout::StandardHw4;
-    case 3:
-        return Chassis::DasLayout::HighlandHw4Byte0;
+    case 3: // legacy persisted alias
+        return Chassis::DasLayout::StandardHw4;
     default:
         return (uint8_t)hwMode == 2 ? Chassis::DasLayout::StandardHw4
                                     : Chassis::DasLayout::LegacyHw3;
@@ -1091,9 +1099,8 @@ static const char *dashDasLayoutName(uint8_t value)
     case 1:
         return "legacy_0x399_byte0";
     case 2:
-        return "standard_hw4_0x39b_byte1";
     case 3:
-        return "highland_0x39b_byte0";
+        return "hw4_0x39b_byte0";
     default:
         return "auto";
     }
@@ -1101,7 +1108,8 @@ static const char *dashDasLayoutName(uint8_t value)
 
 static uint8_t dashClampDasLayoutOverride(int value)
 {
-    return value >= 0 && value <= 3 ? static_cast<uint8_t>(value) : 0;
+    if (value == 3) return 2; // migrate the former Highland-only byte0 option
+    return value >= 0 && value <= 2 ? static_cast<uint8_t>(value) : 0;
 }
 
 static uint8_t dashClampHw3SlewRate(int rate)
@@ -1354,6 +1362,7 @@ static void dashSetBleMode(bool on)
     dashBleProbation = on;
     dashLog(String("[MODE] Switching to ") + (on ? "BLE" : "WiFi") + " mode; rebooting...");
     delay(300);
+    dashShutdownCanForRestart("mode_switch");
     ESP.restart();
 }
 
@@ -4450,6 +4459,7 @@ static void handleReboot()
 {
     server.send(200, "text/plain", "Rebooting...");
     delay(200);
+    dashShutdownCanForRestart("web_reboot");
     ESP.restart();
 }
 
@@ -4485,6 +4495,24 @@ static void handleGvretStop()
 
 static void dashResumeTransmitAfterOtaFailure();
 
+static void dashShutdownCanForRestart(const char *reason)
+{
+    appMaintenanceTxInhibit = true;
+    pluginResetPeriodicEmit();
+    if (dashDriver)
+    {
+        dashDriver->clearPendingTransmit();
+        dashDriver->shutdown();
+    }
+    if (appDashboardDecisionObserver)
+        appDashboardDecisionObserver(false, "restart_shutdown");
+    String message = "[CAN] Controllers stopped before restart";
+    if (reason && *reason)
+        message += String(" via ") + reason;
+    dashLog(message);
+    delay(20);
+}
+
 static void handleOtaResult()
 {
     if (!server.authenticate(DASH_OTA_USER, DASH_OTA_PASS))
@@ -4499,6 +4527,7 @@ static void handleOtaResult()
     {
         dashLog("[OTA] Upload complete -- rebooting");
         delay(300);
+        dashShutdownCanForRestart("web_ota_upload");
         ESP.restart();
     }
     else
@@ -6559,6 +6588,7 @@ static void handleUpdateInstall()
     server.send(200, "application/json", "{\"ok\":true,\"reboot\":true}");
     cleanup.keepInhibited();
     delay(1000);
+    dashShutdownCanForRestart("web_ota_install");
     ESP.restart();
 }
 
@@ -6697,6 +6727,7 @@ static void performAutoUpdate()
     dashLog("[AUTO-OTA] Update successful! Rebooting...");
     cleanup.keepInhibited();
     delay(1000);
+    dashShutdownCanForRestart("automatic_ota");
     ESP.restart();
 }
 

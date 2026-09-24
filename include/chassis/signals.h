@@ -10,8 +10,11 @@ constexpr uint32_t kDasHw4Id = 0x39B;
 constexpr uint32_t kDasSettingsId = 0x293;
 constexpr uint8_t kApStateMask = 0x0F;
 constexpr uint8_t kLegacyApByte = 0;
-constexpr uint8_t kHw4ApByte = 1;
-constexpr uint8_t kHw4ApShift = 4;
+// 0x39B DAS_autopilotState is byte0[3:0] on HW4 as well as Legacy/HW3.
+// The old byte1[7:4] interpretation mixed the fused-speed-limit MSB with
+// adjacent warning flags and is retained nowhere in the active decoder.
+constexpr uint8_t kHw4ApByte = 0;
+constexpr uint8_t kHw4ApShift = 0;
 
 // Flipper fsd_logic/fsd_handler.c receive-only signal fields.
 constexpr uint8_t kEspDriverBrakeByte = 3;
@@ -43,8 +46,8 @@ constexpr uint8_t kDasSideCollisionAvoidByte = 3;
 constexpr uint8_t kDasSideCollisionAvoidShift = 6;
 constexpr uint8_t kDasSideCollisionAvoidMask = 0x03;
 
-// Caller must explicitly confirm the layout; hardware/IDs alone are insufficient.
-// Highland byte0 support is opt-in; automatic layout inference remains omitted.
+// HighlandHw4Byte0 remains as a persisted-value compatibility alias. Both HW4
+// values decode the same authoritative 0x39B byte0[3:0] field.
 enum class DasLayout : uint8_t
 {
     Unknown,

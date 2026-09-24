@@ -3,6 +3,7 @@
 #include <unity.h>
 #include "chassis/telemetry.h"
 #include "chassis/telemetry_state.h"
+#include "chassis/global_tx_safety_state.h"
 #include "drivers/dual_can_routing.h"
 
 using namespace Chassis;
@@ -171,12 +172,12 @@ void test_right_stalk_is_read_only_exact_dlc_and_stale_safe()
     TEST_ASSERT_FALSE(telemetry.snapshot(110).rightStalkSeen);
 }
 
-void test_hw4_ap_state_uses_byte1_high_nibble()
+void test_hw4_ap_state_uses_byte0_low_nibble()
 {
     Chassis::TelemetryState telemetry(DasLayout::StandardHw4, 100);
     auto das = frame(kDasHw4Id, 8);
-    das.data[0] = 0x06; // old byte-0 convention; must be ignored
-    das.data[1] = 0x30; // standard HW4 ACTIVE_NOMINAL
+    das.data[0] = 0x03; // standard HW4 ACTIVE_NOMINAL
+    das.data[1] = 0x60; // adjacent warning fields must be ignored
     TEST_ASSERT_TRUE(telemetry.observe(das, 1));
     auto snapshot = telemetry.snapshot(1);
     TEST_ASSERT_TRUE(snapshot.dasSeen);
@@ -188,7 +189,7 @@ void test_hw4_ap_state_accepts_observed_can_a_topology_only_for_39b()
     Chassis::TelemetryState telemetry(DasLayout::StandardHw4, 100);
     auto das = frame(kDasHw4Id, 8, DualCanRouting::canABusLabel());
     das.physicalBus = CAN_BUS_CAN_A;
-    das.data[1] = 0x30;
+    das.data[0] = 0x03;
     TEST_ASSERT_TRUE(telemetry.observe(das, 1));
     TEST_ASSERT_EQUAL_UINT8(3, telemetry.snapshot(1).apState);
 
@@ -206,12 +207,12 @@ void test_hw4_ap_state_accepts_observed_can_a_topology_only_for_39b()
     TEST_ASSERT_FALSE(telemetry.observe(unrelatedPartyFrame, 4));
 }
 
-void test_highland_layout_is_explicit_byte0_opt_in()
+void test_highland_layout_alias_uses_the_same_byte0_field()
 {
     Chassis::TelemetryState telemetry(DasLayout::HighlandHw4Byte0, 100);
     auto das = frame(kDasHw4Id, 8);
-    das.data[0] = 0x06; // explicit Highland byte-0 state
-    das.data[1] = 0x00; // standard byte-1 field must not win
+    das.data[0] = 0x06;
+    das.data[1] = 0x30; // compatibility alias must use the same byte-0 field
     TEST_ASSERT_TRUE(telemetry.observe(das, 1));
     auto snapshot = telemetry.snapshot(1);
     TEST_ASSERT_TRUE(snapshot.dasSeen);
@@ -273,6 +274,159 @@ void test_samples_expire_wrap_safely_and_reset()
     TEST_ASSERT_FALSE(telemetry.sample(TelemetrySignal::SteeringAngle, 0x54u).fresh);
 }
 
+void test_vehicle_ota_requires_full_byte_stability_and_explicit_clear()
+{
+    TelemetryState telemetry(DasLayout::StandardHw4, 100);
+    auto ota = frame(0x318, 8);
+    ota.physicalBus = CAN_BUS_CAN_B;
+
+    auto party = ota;
+    party.bus = DualCanRouting::canABusLabel();
+    party.physicalBus = CAN_BUS_CAN_A;
+    party.data[6] = 0x02;
+    TEST_ASSERT_FALSE(telemetry.observe(party, 0));
+    TEST_ASSERT_FALSE(telemetry.snapshot(0).vehicleOtaSeen);
+
+    // Low bits say "installing", but a changing upper rolling value must not
+    // assert the global inhibit.
+    for (uint8_t raw : {0x02u, 0x06u, 0x0Au, 0x0Eu})
+    {
+        ota.data[6] = raw;
+        TEST_ASSERT_TRUE(telemetry.observe(ota, raw));
+        TEST_ASSERT_FALSE(telemetry.snapshot(raw).vehicleOtaInProgress);
+    }
+
+    ota.data[6] = 0x12;
+    for (uint8_t i = 0; i < 2; ++i)
+        TEST_ASSERT_TRUE(telemetry.observe(ota, 20 + i));
+    TEST_ASSERT_FALSE(telemetry.snapshot(21).vehicleOtaInProgress);
+    TEST_ASSERT_TRUE(telemetry.observe(ota, 22));
+    TEST_ASSERT_TRUE(telemetry.snapshot(22).vehicleOtaInProgress);
+    TEST_ASSERT_EQUAL_HEX8(0x12, telemetry.snapshot(22).vehicleOtaByte6);
+
+    // Installing samples with a changing full byte cannot assert a fresh
+    // episode and must never clear an already asserted inhibit.
+    for (uint8_t raw : {0x06u, 0x0Au, 0x0Eu, 0x12u, 0x16u, 0x1Au})
+    {
+        ota.data[6] = raw;
+        TEST_ASSERT_TRUE(telemetry.observe(ota, 24 + raw));
+        TEST_ASSERT_TRUE(telemetry.snapshot(24 + raw).vehicleOtaInProgress);
+    }
+
+    // CAN A/Party samples are never authoritative and cannot clear CAN B OTA.
+    party.data[6] = 0x01;
+    for (uint8_t i = 0; i < 6; ++i)
+        TEST_ASSERT_FALSE(telemetry.observe(party, 70 + i));
+    TEST_ASSERT_TRUE(telemetry.snapshot(75).vehicleOtaInProgress);
+
+    // Six explicit consecutive non-installing CAN B samples clear the latch;
+    // upper bits may roll during normal operation.
+    for (uint8_t i = 0; i < 5; ++i)
+    {
+        ota.data[6] = static_cast<uint8_t>(0x01U + (i << 2));
+        TEST_ASSERT_TRUE(telemetry.observe(ota, 30 + i));
+    }
+    TEST_ASSERT_TRUE(telemetry.snapshot(34).vehicleOtaInProgress);
+    ota.data[6] = 0x15;
+    TEST_ASSERT_TRUE(telemetry.observe(ota, 35));
+    TEST_ASSERT_FALSE(telemetry.snapshot(35).vehicleOtaInProgress);
+
+    telemetry.reset();
+    const auto reset = telemetry.snapshot(40);
+    TEST_ASSERT_FALSE(reset.vehicleOtaSeen);
+    TEST_ASSERT_FALSE(reset.vehicleOtaInProgress);
+}
+
+void test_global_tx_safety_decision_is_fail_closed()
+{
+    GlobalTxSafetyState gate(100);
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(GlobalTxSafetyDecision::AutoparkOrDiStale),
+        static_cast<uint8_t>(gate.decision(0)));
+
+    CanFrame di = frame(0x286);
+    di.dlc = 4;
+    di.data[3] = static_cast<uint8_t>(6 << 1);
+    di.bus = CAN_BUS_CAN_A | CAN_BUS_PARTY;
+    di.physicalBus = CAN_BUS_CAN_A;
+    TEST_ASSERT_FALSE(gate.observe(di, 9));
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(GlobalTxSafetyDecision::AutoparkOrDiStale),
+        static_cast<uint8_t>(gate.decision(9)));
+
+    di.bus = CAN_BUS_CAN_B | CAN_BUS_CH | CAN_BUS_VEH;
+    di.physicalBus = CAN_BUS_CAN_B;
+    TEST_ASSERT_TRUE(gate.observe(di, 10));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(GlobalTxSafetyDecision::Allowed),
+                            static_cast<uint8_t>(gate.decision(109)));
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(GlobalTxSafetyDecision::AutoparkOrDiStale),
+        static_cast<uint8_t>(gate.decision(110)));
+
+    for (const uint8_t blockedState : {3u, 4u, 9u})
+    {
+        di.data[3] = static_cast<uint8_t>(blockedState << 1);
+        TEST_ASSERT_TRUE(gate.observe(di, 120 + blockedState));
+        TEST_ASSERT_EQUAL_UINT8(
+            static_cast<uint8_t>(GlobalTxSafetyDecision::AutoparkOrDiStale),
+            static_cast<uint8_t>(gate.decision(120 + blockedState)));
+    }
+
+    di.data[3] = static_cast<uint8_t>(6 << 1);
+    TEST_ASSERT_TRUE(gate.observe(di, 140));
+    CanFrame ota = frame(0x318);
+    ota.bus = CAN_BUS_CAN_B | CAN_BUS_CH | CAN_BUS_VEH;
+    ota.physicalBus = CAN_BUS_CAN_B;
+    ota.dlc = 7;
+    ota.data[6] = 0x12;
+    TEST_ASSERT_TRUE(gate.observe(ota, 141));
+    TEST_ASSERT_TRUE(gate.observe(ota, 142));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(GlobalTxSafetyDecision::Allowed),
+                            static_cast<uint8_t>(gate.decision(142)));
+    TEST_ASSERT_TRUE(gate.observe(ota, 143));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(GlobalTxSafetyDecision::VehicleOta),
+                            static_cast<uint8_t>(gate.decision(143)));
+
+    CanFrame partyClear = ota;
+    partyClear.bus = CAN_BUS_CAN_A | CAN_BUS_PARTY;
+    partyClear.physicalBus = CAN_BUS_CAN_A;
+    partyClear.data[6] = 0x01;
+    for (uint32_t i = 0; i < 6; ++i)
+        TEST_ASSERT_FALSE(gate.observe(partyClear, 144 + i));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(GlobalTxSafetyDecision::VehicleOta),
+                            static_cast<uint8_t>(gate.decision(149)));
+}
+
+void test_global_tx_safety_rejects_invalid_timeout_and_clock_wrap()
+{
+    CanFrame di = frame(0x286);
+    di.bus = CAN_BUS_CAN_B | CAN_BUS_CH | CAN_BUS_VEH;
+    di.physicalBus = CAN_BUS_CAN_B;
+    di.dlc = 4;
+    di.data[3] = static_cast<uint8_t>(6 << 1);
+
+    for (const uint32_t timeout : {0u, 0x80000000u, 0xFFFFFFFFu})
+    {
+        GlobalTxSafetyState invalid(timeout);
+        TEST_ASSERT_TRUE(invalid.observe(di, 10));
+        TEST_ASSERT_EQUAL_UINT8(
+            static_cast<uint8_t>(GlobalTxSafetyDecision::AutoparkOrDiStale),
+            static_cast<uint8_t>(invalid.decision(10)));
+    }
+
+    GlobalTxSafetyState wrapped(100);
+    TEST_ASSERT_TRUE(wrapped.observe(di, 0xFFFFFFF0U));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(GlobalTxSafetyDecision::Allowed),
+                            static_cast<uint8_t>(wrapped.decision(0xFFFFFFF5U)));
+    wrapped.advanceClock(5);
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(GlobalTxSafetyDecision::AutoparkOrDiStale),
+        static_cast<uint8_t>(wrapped.decision(5)));
+    TEST_ASSERT_TRUE(wrapped.observe(di, 6));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(GlobalTxSafetyDecision::Allowed),
+                            static_cast<uint8_t>(wrapped.decision(7)));
+}
+
 void test_invalid_timeout_never_reports_live()
 {
     for (uint32_t timeout : {0u, 0x80000000u, 0xFFFFFFFFu})
@@ -292,10 +446,13 @@ int main()
     RUN_TEST(test_unknown_or_short_dlc_is_rejected);
     RUN_TEST(test_decoder_fields_match_flipper_layouts);
     RUN_TEST(test_right_stalk_is_read_only_exact_dlc_and_stale_safe);
-    RUN_TEST(test_hw4_ap_state_uses_byte1_high_nibble);
+    RUN_TEST(test_hw4_ap_state_uses_byte0_low_nibble);
     RUN_TEST(test_hw4_ap_state_accepts_observed_can_a_topology_only_for_39b);
-    RUN_TEST(test_highland_layout_is_explicit_byte0_opt_in);
+    RUN_TEST(test_highland_layout_alias_uses_the_same_byte0_field);
     RUN_TEST(test_di_autopark_requires_can_b_provenance_and_clears_explicitly);
+    RUN_TEST(test_vehicle_ota_requires_full_byte_stability_and_explicit_clear);
+    RUN_TEST(test_global_tx_safety_decision_is_fail_closed);
+    RUN_TEST(test_global_tx_safety_rejects_invalid_timeout_and_clock_wrap);
     RUN_TEST(test_samples_expire_wrap_safely_and_reset);
     RUN_TEST(test_invalid_timeout_never_reports_live);
     return UNITY_END();

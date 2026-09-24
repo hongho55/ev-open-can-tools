@@ -380,8 +380,7 @@ void test_hw4_das_status_available_does_not_mark_ap_active()
 {
     CanFrame f = {.id = 923};
     f.dlc = 8;
-    f.data[0] = 0x06; // old byte-0 convention; must be ignored
-    f.data[1] = 0x20; // standard HW4 AVAILABLE
+    f.data[0] = 0x02; // standard HW4 AVAILABLE
 
     handler.handleMessage(f, mock);
 
@@ -392,8 +391,7 @@ void test_hw4_das_status_active_marks_ap_active()
 {
     CanFrame f = {.id = 923};
     f.dlc = 8;
-    f.data[0] = 0x02; // unrelated byte-0 data
-    f.data[1] = 0x50; // standard HW4 active lane/FSD state
+    f.data[0] = 0x05; // standard HW4 active lane/FSD state
 
     handler.handleMessage(f, mock);
 
@@ -411,12 +409,12 @@ void test_hw4_ignores_0x399_as_ap_state()
     TEST_ASSERT_FALSE(handler.APActive);
 }
 
-void test_hw4_das_status_uses_byte1_high_nibble()
+void test_hw4_das_status_uses_byte0_low_nibble()
 {
     CanFrame f = {.id = 923};
     f.dlc = 8;
-    f.data[0] = 0x06;
-    f.data[1] = 0x50;
+    f.data[0] = 0x05;
+    f.data[1] = 0x60;
 
     handler.handleMessage(f, mock);
 
@@ -424,24 +422,23 @@ void test_hw4_das_status_uses_byte1_high_nibble()
     TEST_ASSERT_EQUAL_INT(5, handler.dasAutopilotStatus);
 }
 
-void test_hw4_das_status_autopark_does_not_mark_ap_active()
+void test_hw4_das_status_state6_marks_activity_for_direct_di_gate()
 {
     CanFrame f = {.id = 923};
     f.dlc = 8;
-    f.data[1] = 0x60; // AUTOPARK must not open the normal AP/Nag gate
+    f.data[0] = 0x06;
 
     handler.handleMessage(f, mock);
 
-    TEST_ASSERT_FALSE(handler.APActive);
+    TEST_ASSERT_TRUE(handler.APActive);
     TEST_ASSERT_EQUAL_INT(6, handler.dasAutopilotStatus);
 }
 
-void test_hw4_das_status_accepts_two_byte_frame()
+void test_hw4_das_status_accepts_one_byte_frame()
 {
     CanFrame f = {.id = 923};
-    f.dlc = 2;
-    f.data[0] = 0x00;
-    f.data[1] = 0x30;
+    f.dlc = 1;
+    f.data[0] = 0x03;
 
     handler.handleMessage(f, mock);
 
@@ -488,7 +485,7 @@ void test_hw4_gear_drive_clears_parked()
 
 void test_hw4_filter_ids_count()
 {
-    TEST_ASSERT_EQUAL_UINT8(7, handler.filterIdCount());
+    TEST_ASSERT_EQUAL_UINT8(9, handler.filterIdCount());
 }
 
 void test_hw4_filter_ids_values()
@@ -497,16 +494,20 @@ void test_hw4_filter_ids_values()
     TEST_ASSERT_EQUAL_UINT32(280, ids[0]);
 #if defined(ISA_SPEED_CHIME_SUPPRESS) && !defined(ESP32_DASHBOARD)
     TEST_ASSERT_EQUAL_UINT32(599, ids[1]);
-    TEST_ASSERT_EQUAL_UINT32(921, ids[2]);
-    TEST_ASSERT_EQUAL_UINT32(923, ids[3]);
+    TEST_ASSERT_EQUAL_UINT32(0x286, ids[2]);
+    TEST_ASSERT_EQUAL_UINT32(0x318, ids[3]);
+    TEST_ASSERT_EQUAL_UINT32(921, ids[4]);
+    TEST_ASSERT_EQUAL_UINT32(923, ids[5]);
 #else
     TEST_ASSERT_EQUAL_UINT32(390, ids[1]);
     TEST_ASSERT_EQUAL_UINT32(599, ids[2]);
-    TEST_ASSERT_EQUAL_UINT32(923, ids[3]);
+    TEST_ASSERT_EQUAL_UINT32(0x286, ids[3]);
+    TEST_ASSERT_EQUAL_UINT32(0x318, ids[4]);
+    TEST_ASSERT_EQUAL_UINT32(923, ids[5]);
 #endif
-    TEST_ASSERT_EQUAL_UINT32(1016, ids[4]);
-    TEST_ASSERT_EQUAL_UINT32(1021, ids[5]);
-    TEST_ASSERT_EQUAL_UINT32(2047, ids[6]);
+    TEST_ASSERT_EQUAL_UINT32(1016, ids[6]);
+    TEST_ASSERT_EQUAL_UINT32(1021, ids[7]);
+    TEST_ASSERT_EQUAL_UINT32(2047, ids[8]);
 }
 
 int main()
@@ -552,9 +553,9 @@ int main()
     RUN_TEST(test_hw4_das_status_available_does_not_mark_ap_active);
     RUN_TEST(test_hw4_das_status_active_marks_ap_active);
     RUN_TEST(test_hw4_ignores_0x399_as_ap_state);
-    RUN_TEST(test_hw4_das_status_uses_byte1_high_nibble);
-    RUN_TEST(test_hw4_das_status_autopark_does_not_mark_ap_active);
-    RUN_TEST(test_hw4_das_status_accepts_two_byte_frame);
+    RUN_TEST(test_hw4_das_status_uses_byte0_low_nibble);
+    RUN_TEST(test_hw4_das_status_state6_marks_activity_for_direct_di_gate);
+    RUN_TEST(test_hw4_das_status_accepts_one_byte_frame);
     RUN_TEST(test_hw4_gw_autopilot_mux2_updates_state_without_send);
     RUN_TEST(test_hw4_gear_park_marks_parked);
     RUN_TEST(test_hw4_gear_drive_clears_parked);

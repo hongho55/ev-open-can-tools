@@ -1,5 +1,10 @@
 # LILYGO T-2CAN dual-bus wiring
 
+Project lineage and source authority are defined in
+[`t2can-project-lineage.md`](t2can-project-lineage.md). In particular, the local
+`t2can-bobby` directory is the historical `feat/t2can-dual` experiment, not the
+original baseline; that role belongs to `anoblekman/t2can-roaming`.
+
 This build keeps both physical CAN controllers available at **500 kbit/s**:
 
 | Logical bus | Controller | Wiring |

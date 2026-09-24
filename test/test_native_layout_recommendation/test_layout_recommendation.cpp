@@ -21,22 +21,19 @@ int main()
     Evidence undecidableHw4;
     undecidableHw4.hw4_39bValid = 100;
     undecidableHw4.hw4Fresh = true;
-    Result ambiguous = recommend(undecidableHw4);
-    assert(ambiguous.candidate == DasLayout::Unknown);
-    assert(ambiguous.confidence == Confidence::Low);
-    assert(ambiguous.ambiguous);
-    assert(ambiguous.alternativeCount == 2);
-    assert(ambiguous.alternatives[0] == DasLayout::StandardHw4);
-    assert(ambiguous.alternatives[1] == DasLayout::HighlandHw4Byte0);
-    assert(!confidenceAllowsConfirmation(ambiguous.confidence));
+    Result hw4 = recommend(undecidableHw4);
+    assert(hw4.candidate == DasLayout::StandardHw4);
+    assert(hw4.confidence == Confidence::High);
+    assert(!hw4.ambiguous);
+    assert(confidenceAllowsConfirmation(hw4.confidence));
 
     Evidence declared = undecidableHw4;
     declared.declaredHighlandProfile = true;
-    Result highland = recommend(declared);
-    assert(highland.candidate == DasLayout::HighlandHw4Byte0);
-    assert(highland.confidence == Confidence::High);
-    assert(confidenceAllowsConfirmation(highland.confidence));
-    assert(!highland.mayMutateLayoutAutomatically);
+    Result declaredResult = recommend(declared);
+    assert(declaredResult.candidate == DasLayout::StandardHw4);
+    assert(declaredResult.confidence == Confidence::High);
+    assert(confidenceAllowsConfirmation(declaredResult.confidence));
+    assert(!declaredResult.mayMutateLayoutAutomatically);
 
     Evidence conflict = legacy;
     conflict.hw4_39bValid = 100;
@@ -44,7 +41,7 @@ int main()
     Result conflicted = recommend(conflict);
     assert(conflicted.candidate == DasLayout::Unknown);
     assert(conflicted.ambiguous);
-    assert(conflicted.alternativeCount == 3);
+    assert(conflicted.alternativeCount == 2);
     assert(!confidenceAllowsConfirmation(conflicted.confidence));
 
     Evidence stale;
@@ -68,8 +65,8 @@ int main()
     assert(tracked.rejectedDlc == 1);
     assert(tracked.hw4Fresh);
     Result trackedResult = recommend(tracked);
-    assert(trackedResult.candidate == DasLayout::Unknown);
-    assert(trackedResult.ambiguous);
+    assert(trackedResult.candidate == DasLayout::StandardHw4);
+    assert(!trackedResult.ambiguous);
     assert(tracker.evidence(110, 100, false, false).hw4Fresh == false);
     assert(layoutName(DasLayout::StandardHw4) == std::string("standard_hw4"));
     assert(confidenceName(Confidence::Low) == std::string("low"));

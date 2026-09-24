@@ -91,12 +91,12 @@ class EspIdfStabilityRegressionTests(unittest.TestCase):
     def test_juniper_hw4_catalog_uses_existing_plugins_and_installs_disabled(self) -> None:
         for plugin_name in (
             "ISA Chime Suppress HW4",
-            "Summon EU Unlock for all cars",
             "FSD Activation HW4 (without TLSSC bypass)",
             "Bypass TLSSC HW4 and include FSD activation",
             "Emergency Vehicle Detection HW4 with FSD enabling",
         ):
             self.assertIn(plugin_name, self.ui)
+        self.assertNotIn("Summon EU Unlock for all cars", self.ui)
         self.assertIn("[[5,7],[7,10],[10,14],[15,21]]", self.ui)
         self.assertIn("`HW4 Speed Offset +${offset}`", self.ui)
         self.assertIn("ev-open-can-tools", self.ui)

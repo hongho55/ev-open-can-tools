@@ -54,6 +54,14 @@ public:
 
     bool send(const CanFrame &frame) override
     {
+        if (!sendAllowed(frame))
+        {
+            if (onSendFrame)
+                onSendFrame(frame, false);
+            if (onSendAttempt)
+                onSendAttempt(frame, false, false);
+            return false;
+        }
         can_frame raw;
         raw.can_id = frame.id;
         raw.can_dlc = frame.dlc;
@@ -71,6 +79,8 @@ public:
         }
         if (onSendFrame)
             onSendFrame(frame, ok);
+        if (onSendAttempt)
+            onSendAttempt(frame, ok, true);
         return ok;
     }
 

@@ -126,13 +126,13 @@ void test_layout_extraction_and_disabled_defaults()
     ChassisFsdState hw4(DasLayout::StandardHw4, 100);
     TEST_ASSERT_FALSE(hw4.observe(das(0x399), 1));
     TEST_ASSERT_TRUE(hw4.observe(das(0x39B), 2));
-    TEST_ASSERT_EQUAL_UINT8(6, hw4.sample(2).raw);
+    TEST_ASSERT_EQUAL_UINT8(3, hw4.sample(2).raw);
     TEST_ASSERT_EQUAL_UINT32(2, hw4.sample(2).observedMs);
     // Every nibble is raw data, including unknown/reserved values; no active flag.
     for (unsigned raw = 0; raw < 16; ++raw)
     {
         auto frame = das(0x39B);
-        frame.data[1] = (raw << 4) | 0xF;
+        frame.data[0] = 0xA0 | raw;
         hw4.observe(frame, 3);
         TEST_ASSERT_EQUAL_UINT8(raw, hw4.sample(3).raw);
     }

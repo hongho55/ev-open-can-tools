@@ -197,7 +197,7 @@ void test_hw3_summon_request_survives_aca_while_still_in_park()
     TEST_ASSERT_EQUAL(1, mock.sent.size());
 }
 
-void test_hw3_autopark_state_closes_mux1_injection_gate()
+void test_hw3_state6_remains_activity_for_direct_di_autopark_gate()
 {
     HW3Handler handler;
     handler.enablePrint = false;
@@ -212,12 +212,12 @@ void test_hw3_autopark_state_closes_mux1_injection_gate()
     CanFrame autopark = {.id = 921};
     autopark.data[0] = 0x06;
     handler.handleMessage(autopark, mock);
-    TEST_ASSERT_FALSE(handler.APActive);
+    TEST_ASSERT_TRUE(handler.APActive);
     mock.reset();
 
     CanFrame mux1 = hw3Mux1Frame();
     handler.handleMessage(mux1, mock);
-    TEST_ASSERT_EQUAL(0, mock.sent.size());
+    TEST_ASSERT_EQUAL(1, mock.sent.size());
 }
 
 void test_hw4_enhanced_autopilot_waits_for_ap_before_mux1_injection()
@@ -247,11 +247,10 @@ void test_hw4_enhanced_autopilot_waits_for_ap_before_mux1_injection()
 
     CanFrame hw4Active = {.id = 923};
     hw4Active.dlc = 8;
-    hw4Active.data[0] = 0x00;
-    hw4Active.data[1] = 0x30;
+    hw4Active.data[0] = 0x03;
     handler.handleMessage(hw4Active, mock);
     TEST_ASSERT_TRUE(handler.APActive);
-    hw4Active.data[1] = 0x50;
+    hw4Active.data[0] = 0x05;
     handler.handleMessage(hw4Active, mock);
     TEST_ASSERT_TRUE(handler.APActive);
     mock.reset();
@@ -324,7 +323,7 @@ void test_hw4_enhanced_autopilot_waits_when_live_gear_is_unknown()
     TEST_ASSERT_FALSE(handler.injectionGateOpen());
 }
 
-void test_hw4_autopark_state_closes_mux1_injection_gate()
+void test_hw4_state6_remains_activity_for_direct_di_autopark_gate()
 {
     HW4Handler handler;
     handler.enablePrint = false;
@@ -337,18 +336,18 @@ void test_hw4_autopark_state_closes_mux1_injection_gate()
 
     CanFrame active = {.id = 923};
     active.dlc = 8;
-    active.data[1] = 0x30;
+    active.data[0] = 0x03;
     handler.handleMessage(active, mock);
     TEST_ASSERT_TRUE(handler.APActive);
 
-    active.data[1] = 0x60;
+    active.data[0] = 0x06;
     handler.handleMessage(active, mock);
-    TEST_ASSERT_FALSE(handler.APActive);
+    TEST_ASSERT_TRUE(handler.APActive);
     mock.reset();
 
     CanFrame mux1 = hw4Mux1Frame();
     handler.handleMessage(mux1, mock);
-    TEST_ASSERT_EQUAL(0, mock.sent.size());
+    TEST_ASSERT_EQUAL(1, mock.sent.size());
 }
 
 void test_hw4_summon_request_survives_aca_while_still_in_park()
@@ -387,12 +386,12 @@ int main()
     RUN_TEST(test_hw3_enhanced_autopilot_stops_mux1_injection_when_shifted_to_drive);
     RUN_TEST(test_hw3_enhanced_autopilot_waits_when_live_gear_is_unknown);
     RUN_TEST(test_hw3_summon_request_survives_aca_while_still_in_park);
-    RUN_TEST(test_hw3_autopark_state_closes_mux1_injection_gate);
+    RUN_TEST(test_hw3_state6_remains_activity_for_direct_di_autopark_gate);
     RUN_TEST(test_hw4_enhanced_autopilot_waits_for_ap_before_mux1_injection);
     RUN_TEST(test_hw4_enhanced_autopilot_allows_mux1_injection_while_parked);
     RUN_TEST(test_hw4_enhanced_autopilot_stops_mux1_injection_when_shifted_to_drive);
     RUN_TEST(test_hw4_enhanced_autopilot_waits_when_live_gear_is_unknown);
-    RUN_TEST(test_hw4_autopark_state_closes_mux1_injection_gate);
+    RUN_TEST(test_hw4_state6_remains_activity_for_direct_di_autopark_gate);
     RUN_TEST(test_hw4_summon_request_survives_aca_while_still_in_park);
 
     return UNITY_END();

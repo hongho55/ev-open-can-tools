@@ -96,12 +96,12 @@ inline uint8_t readDASAutopilotStatus(const CanFrame &frame, Chassis::DasLayout 
 {
     switch (layout)
     {
-    case Chassis::DasLayout::LegacyHw3:
-    case Chassis::DasLayout::HighlandHw4Byte0:
-        return frame.data[Chassis::kLegacyApByte] & Chassis::kApStateMask;
     case Chassis::DasLayout::StandardHw4:
+    case Chassis::DasLayout::HighlandHw4Byte0:
         return static_cast<uint8_t>((frame.data[Chassis::kHw4ApByte] >>
                                      Chassis::kHw4ApShift) & Chassis::kApStateMask);
+    case Chassis::DasLayout::LegacyHw3:
+        return frame.data[Chassis::kLegacyApByte] & Chassis::kApStateMask;
     default:
         return 0;
     }
@@ -109,9 +109,10 @@ inline uint8_t readDASAutopilotStatus(const CanFrame &frame, Chassis::DasLayout 
 
 inline bool isDASAutopilotActive(uint8_t status)
 {
-    // Highland safety rule: only 3..5 are engaged-driving states. State 6 is
-    // in-car Autopark and must never open the general activity TX gate.
-    return status >= 3 && status <= 5;
+    // DAS states 3..6 are engaged. State 6 is also used by in-car Autopark, so
+    // the independent, fresh 0x286 DI_autoparkState gate must remain closed
+    // before this activity signal can authorize physical TX.
+    return status >= 3 && status <= 6;
 }
 
 inline uint8_t readDIAutoparkState(const CanFrame &frame)

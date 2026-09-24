@@ -74,23 +74,28 @@ void tearDown() {}
 
 void test_nag_filter_ids_count()
 {
-    TEST_ASSERT_EQUAL_UINT8(1, handler.filterIdCount());
+    TEST_ASSERT_EQUAL_UINT8(3, handler.filterIdCount());
 }
 
 void test_nag_filter_ids_value()
 {
     const uint32_t *ids = handler.filterIds();
-    TEST_ASSERT_EQUAL_UINT32(880, ids[0]);
+    TEST_ASSERT_EQUAL_UINT32(0x286, ids[0]);
+    TEST_ASSERT_EQUAL_UINT32(0x318, ids[1]);
+    TEST_ASSERT_EQUAL_UINT32(880, ids[2]);
     ids = handler.modeFilterIds();
-    TEST_ASSERT_EQUAL_UINT8(1, handler.modeFilterIdCount(static_cast<uint8_t>(NagMode::ModeA)));
-    TEST_ASSERT_EQUAL_UINT8(3, handler.modeFilterIdCount(static_cast<uint8_t>(NagMode::ModeC)));
-    TEST_ASSERT_EQUAL_UINT32(0x399, ids[1]);
-    TEST_ASSERT_EQUAL_UINT32(0x129, ids[2]);
+    TEST_ASSERT_EQUAL_UINT8(3, handler.modeFilterIdCount(static_cast<uint8_t>(NagMode::ModeA)));
+    TEST_ASSERT_EQUAL_UINT8(5, handler.modeFilterIdCount(static_cast<uint8_t>(NagMode::ModeC)));
+    TEST_ASSERT_EQUAL_UINT32(0x286, ids[0]);
+    TEST_ASSERT_EQUAL_UINT32(0x318, ids[1]);
+    TEST_ASSERT_EQUAL_UINT32(880, ids[2]);
+    TEST_ASSERT_EQUAL_UINT32(0x399, ids[3]);
+    TEST_ASSERT_EQUAL_UINT32(0x129, ids[4]);
 
     handler.setHardwareMode(2);
     ids = handler.modeFilterIds();
-    TEST_ASSERT_EQUAL_UINT32(0x39B, ids[1]);
-    TEST_ASSERT_EQUAL_UINT32(0x129, ids[2]);
+    TEST_ASSERT_EQUAL_UINT32(0x39B, ids[3]);
+    TEST_ASSERT_EQUAL_UINT32(0x129, ids[4]);
 }
 
 void test_nag_hw4_allows_modes_a_b()

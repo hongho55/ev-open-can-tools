@@ -382,15 +382,15 @@ struct LegacyHandler : public CarManagerBase
     {
 #if defined(ESP32_DASHBOARD)
         // Explicit hex IDs: BMS 0x292 is 658 decimal, not 292.
-        static constexpr uint32_t ids[] = {0x045, 0x108, 0x118, 0x129, 0x132, 0x145, 0x175, 0x186, 0x238, 0x247, 0x257, 0x286, 0x292, 0x2B9, 0x311, 0x312, 0x33A, 0x370, 0x389, 0x399, 0x39B, 0x3E9, 0x3EE, 0x3F8, 0x3FD, 0x488, 0x7FF};
+        static constexpr uint32_t ids[] = {0x045, 0x108, 0x118, 0x129, 0x132, 0x145, 0x175, 0x186, 0x238, 0x247, 0x257, 0x286, 0x292, 0x2B9, 0x311, 0x312, 0x318, 0x33A, 0x370, 0x389, 0x399, 0x39B, 0x3E9, 0x3EE, 0x3F8, 0x3FD, 0x488, 0x7FF};
         return ids;
     }
-    uint8_t filterIdCount() const override { return 27; }
+    uint8_t filterIdCount() const override { return 28; }
 #else
-        static constexpr uint32_t ids[] = {69, 280, 390, 599, 921, 1006, 1016};
+        static constexpr uint32_t ids[] = {69, 280, 390, 599, 646, 792, 921, 1006, 1016};
         return ids;
     }
-    uint8_t filterIdCount() const override { return 7; }
+    uint8_t filterIdCount() const override { return 9; }
 #endif
 
     void handleMessage(CanFrame &frame, CanDriver &driver) override
@@ -526,15 +526,15 @@ struct HW3Handler : public CarManagerBase
     {
 #if defined(ESP32_DASHBOARD)
         // Explicit hex IDs: BMS 0x292 is 658 decimal, not 292.
-        static constexpr uint32_t ids[] = {0x045, 0x108, 0x118, 0x129, 0x132, 0x145, 0x175, 0x186, 0x238, 0x247, 0x257, 0x286, 0x292, 0x2B9, 0x311, 0x312, 0x33A, 0x370, 0x389, 0x399, 0x39B, 0x3E9, 0x3EE, 0x3F8, 0x3FD, 0x488, 0x7FF};
+        static constexpr uint32_t ids[] = {0x045, 0x108, 0x118, 0x129, 0x132, 0x145, 0x175, 0x186, 0x238, 0x247, 0x257, 0x286, 0x292, 0x2B9, 0x311, 0x312, 0x318, 0x33A, 0x370, 0x389, 0x399, 0x39B, 0x3E9, 0x3EE, 0x3F8, 0x3FD, 0x488, 0x7FF};
         return ids;
     }
-    uint8_t filterIdCount() const override { return 27; }
+    uint8_t filterIdCount() const override { return 28; }
 #else
-        static constexpr uint32_t ids[] = {280, 390, 599, 921, 1016, 1021, 2047};
+        static constexpr uint32_t ids[] = {280, 390, 599, 646, 792, 921, 1016, 1021, 2047};
         return ids;
     }
-    uint8_t filterIdCount() const override { return 7; }
+    uint8_t filterIdCount() const override { return 9; }
 #endif
 
     void handleMessage(CanFrame &frame, CanDriver &driver) override
@@ -771,15 +771,15 @@ struct NagHandler : public CarManagerBase
 
     const uint32_t *filterIds() const override
     {
-        static constexpr uint32_t ids[] = {kTargetId};
+        static constexpr uint32_t ids[] = {0x286, 0x318, kTargetId};
         return ids;
     }
-    uint8_t filterIdCount() const override { return 1; }
+    uint8_t filterIdCount() const override { return 3; }
 
     const uint32_t *modeFilterIds() const
     {
-        static constexpr uint32_t legacyIds[] = {kTargetId, kLegacyApStateId, kSteeringId};
-        static constexpr uint32_t hw4Ids[] = {kTargetId, kHw4ApStateId, kSteeringId};
+        static constexpr uint32_t legacyIds[] = {0x286, 0x318, kTargetId, kLegacyApStateId, kSteeringId};
+        static constexpr uint32_t hw4Ids[] = {0x286, 0x318, kTargetId, kHw4ApStateId, kSteeringId};
         const Chassis::DasLayout layout = dasLayout();
         const bool hw4 = layout == Chassis::DasLayout::StandardHw4 ||
                          layout == Chassis::DasLayout::HighlandHw4Byte0 ||
@@ -790,7 +790,7 @@ struct NagHandler : public CarManagerBase
 
     uint8_t modeFilterIdCount(uint8_t mode) const
     {
-        return clampNagMode(mode) == static_cast<uint8_t>(NagMode::ModeC) ? 3 : 1;
+        return clampNagMode(mode) == static_cast<uint8_t>(NagMode::ModeC) ? 5 : 3;
     }
 
     void handleMessage(CanFrame &frame, CanDriver &driver) override
@@ -1084,22 +1084,22 @@ struct HW4Handler : public CarManagerBase
 #if defined(ISA_SPEED_CHIME_SUPPRESS) && !defined(ESP32_DASHBOARD)
         // MCP2515 has six hardware filters. Keep 0x399 for ISA suppression
         // and use DI_systemStatus (0x118) as the gear source in this build.
-        static constexpr uint32_t ids[] = {280, 599, 921, 923, 1016, 1021, 2047};
+        static constexpr uint32_t ids[] = {280, 599, 646, 792, 921, 923, 1016, 1021, 2047};
         return ids;
     }
-    uint8_t filterIdCount() const override { return 7; }
+    uint8_t filterIdCount() const override { return 9; }
 #else
 #if defined(ESP32_DASHBOARD)
         // Explicit hex IDs: BMS 0x292 is 658 decimal, not 292.
-        static constexpr uint32_t ids[] = {0x045, 0x108, 0x118, 0x129, 0x132, 0x145, 0x175, 0x186, 0x238, 0x247, 0x257, 0x286, 0x292, 0x2B9, 0x311, 0x312, 0x33A, 0x370, 0x389, 0x399, 0x39B, 0x3E9, 0x3EE, 0x3F8, 0x3FD, 0x488, 0x7FF};
+        static constexpr uint32_t ids[] = {0x045, 0x108, 0x118, 0x129, 0x132, 0x145, 0x175, 0x186, 0x238, 0x247, 0x257, 0x286, 0x292, 0x2B9, 0x311, 0x312, 0x318, 0x33A, 0x370, 0x389, 0x399, 0x39B, 0x3E9, 0x3EE, 0x3F8, 0x3FD, 0x488, 0x7FF};
         return ids;
     }
-    uint8_t filterIdCount() const override { return 27; }
+    uint8_t filterIdCount() const override { return 28; }
 #else
-        static constexpr uint32_t ids[] = {280, 390, 599, 923, 1016, 1021, 2047};
+        static constexpr uint32_t ids[] = {280, 390, 599, 646, 792, 923, 1016, 1021, 2047};
         return ids;
     }
-    uint8_t filterIdCount() const override { return 7; }
+    uint8_t filterIdCount() const override { return 9; }
 #endif
 #endif
 
@@ -1147,7 +1147,7 @@ struct HW4Handler : public CarManagerBase
         }
         if (frame.id == 923)
         {
-            if (frame.dlc < 2)
+            if (frame.dlc < 1)
                 return;
             Chassis::DasLayout layout = dasLayout();
             if (layout == Chassis::DasLayout::Unknown)

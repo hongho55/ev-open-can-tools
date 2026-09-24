@@ -4,6 +4,7 @@
 #include "can_frame_types.h"
 #include "drivers/can_driver.h"
 #include "can_helpers.h"
+#include "chassis/global_tx_safety_state.h"
 #include "handlers.h"
 #ifdef ESP_PLATFORM
 #include "gvret_serial.h"
@@ -106,6 +107,34 @@ static bool (*appDashboardMasterTxEnabled)() = nullptr;
 static bool (*appDashboardAnomalyBlocksTx)() = nullptr;
 static bool (*appDashboardActivityTxAllowed)() = nullptr;
 static Shared<bool> appMaintenanceTxInhibit{false};
+static Chassis::GlobalTxSafetyState appTxSafetyState{1500};
+
+static uint32_t appSafetyMillis()
+{
+#ifndef NATIVE_BUILD
+    return static_cast<uint32_t>(millis());
+#else
+    return 0;
+#endif
+}
+
+static CanFrame appSafetyObservation(const CanFrame &frame)
+{
+    CanFrame observed = frame;
+#if !defined(DRIVER_T2CAN_DUAL)
+    // Legacy single-bus drivers may not supply topology metadata. Synthesize
+    // it only when physical provenance is absent; a known CAN-A frame must
+    // never be promoted to authoritative vehicle CAN-B safety input.
+    if (observed.id == 0x286 || observed.id == 0x318)
+    {
+        if (observed.physicalBus == CAN_BUS_ANY)
+            observed.physicalBus = CAN_BUS_CAN_B;
+        if (observed.physicalBus == CAN_BUS_CAN_B && observed.bus == CAN_BUS_ANY)
+            observed.bus = CAN_BUS_CAN_B | CAN_BUS_CH | CAN_BUS_VEH;
+    }
+#endif
+    return observed;
+}
 
 static bool appInjectionReady()
 {
@@ -128,6 +157,21 @@ static bool appCanTransmitAllowed(const CanFrame &)
     if (appMaintenanceTxInhibit)
     {
         if (appDashboardDecisionObserver) appDashboardDecisionObserver(false, "maintenance");
+        return false;
+    }
+    Chassis::GlobalTxSafetyDecision safetyDecision;
+    {
+        AppHandlerGuard guard;
+        safetyDecision = appTxSafetyState.decision(appSafetyMillis());
+    }
+    if (safetyDecision == Chassis::GlobalTxSafetyDecision::VehicleOta)
+    {
+        if (appDashboardDecisionObserver) appDashboardDecisionObserver(false, "vehicle_ota");
+        return false;
+    }
+    if (safetyDecision == Chassis::GlobalTxSafetyDecision::AutoparkOrDiStale)
+    {
+        if (appDashboardDecisionObserver) appDashboardDecisionObserver(false, "autopark_or_di_stale");
         return false;
     }
     if (!appInjectionReady())
@@ -356,6 +400,7 @@ static void appPrepare(std::unique_ptr<Driver> drv)
     }
     appHandler = std::make_unique<SelectedHandler>();
     appActiveHandler = appHandler.get();
+    appTxSafetyState.reset();
 
 #if defined(ESP32_DASHBOARD) && !defined(NATIVE_BUILD) && defined(DASH_INJECTION_TOGGLE_PIN)
     pinMode(DASH_INJECTION_TOGGLE_PIN, INPUT_PULLUP);
@@ -425,6 +470,10 @@ static bool appStartDriver(const char *readyMsg)
 template <typename Driver>
 static void appLoop()
 {
+    {
+        AppHandlerGuard guard;
+        appTxSafetyState.advanceClock(appSafetyMillis());
+    }
 #ifdef ESP_PLATFORM
     RuntimeDiagnostics::noteCanLoop();
 #endif
@@ -478,6 +527,8 @@ static void appLoop()
 #endif
         {
             AppHandlerGuard guard;
+            const CanFrame safetyFrame = appSafetyObservation(original);
+            appTxSafetyState.observe(safetyFrame, appSafetyMillis());
             CarManagerBase *h = appGetActiveHandler();
             if (!h)
                 h = appHandler.get();

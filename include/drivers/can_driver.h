@@ -28,6 +28,10 @@ struct CanDriver
     }
     virtual bool ready() const { return true; }
     virtual void setMonitorAll(bool) {}
+    // Stop controller activity and leave the physical TX output recessive before
+    // restart/power transitions. Implementations may keep this as a no-op when
+    // no controller has been initialized.
+    virtual void shutdown() {}
     virtual void clearPendingTransmit() {}
 
     // Explicit, authenticated maintenance self-test. Implementations must not

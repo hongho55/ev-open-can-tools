@@ -268,6 +268,16 @@ public:
         return ok;
     }
 
+    void shutdown() override
+    {
+        lock();
+        stopAndUninstallLocked();
+        unlock();
+        // A high TXD level is CAN-recessive for the external transceiver.
+        pinMode(txPin_, OUTPUT);
+        digitalWrite(txPin_, HIGH);
+    }
+
     void clearPendingTransmit() override
     {
         lock();

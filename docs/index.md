@@ -1,6 +1,6 @@
 # ev-open-can-tools documentation
 
-[Project home](../) · [Start onboarding](../onboarding/) · [Build and flash](building.md) · [Dashboard](dashboard.md) · [Onboarding guide](onboarding.md) · [Plugins](plugins.md) · [CAN safety](nag-killer.md) · [Active FSD roadmap](t2can-active-fsd-roadmap.md) · [Runtime optimization](esp32-optimization.md) · [Field maintenance](vehicle-esp32-field-maintenance.md) · [Automatic sync](vehicle-automatic-sync.md) · [S26 Android gateway](../android-gateway/) · [Release notes](../CHANGELOG.md)
+[Project home](../) · [Start onboarding](../onboarding/) · [Build and flash](building.md) · [Dashboard](dashboard.md) · [Onboarding guide](onboarding.md) · [Plugins](plugins.md) · [CAN safety](nag-killer.md) · [T-2CAN lineage](t2can-project-lineage.md) · [Active FSD roadmap](t2can-active-fsd-roadmap.md) · [Runtime optimization](esp32-optimization.md) · [Field maintenance](vehicle-esp32-field-maintenance.md) · [Automatic sync](vehicle-automatic-sync.md) · [S26 Android gateway](../android-gateway/) · [Release notes](../CHANGELOG.md)
 
 ## Start here
 
